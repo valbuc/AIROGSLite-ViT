@@ -1,0 +1,14 @@
+name: airogs
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python>=3.7
+  - matplotlib
+  - pandas>1.0.0
+  - jupyter
+  - ipython
+  # Core scientific python
+  - numpy
+  - conda-forge::opencv
