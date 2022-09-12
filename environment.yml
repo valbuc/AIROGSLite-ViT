@@ -12,3 +12,4 @@ dependencies:
   # Core scientific python
   - numpy
   - conda-forge::opencv
+  - conda-forge::tqdm
