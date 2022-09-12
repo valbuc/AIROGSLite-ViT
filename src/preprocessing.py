@@ -124,3 +124,23 @@ def square_resize(raw_jpg: np.ndarray, side: int):
     top, bottom, left, right = get_retinal_image_diameter_as_horizontal_segment(raw_jpg)
     retinal_img_sq = get_square_retinal_img(raw_jpg, top, bottom, left, right)
     return resize_square(retinal_img_sq, side)
+
+
+def make_square(raw_jpg: np.ndarray):
+    '''
+    cuts out square around retina and resizes image to fox resolution
+
+    Parameters
+    ----------
+    raw_jpg: numpy.ndarray
+        image as found in dataset
+    side: int
+        number of pixels per side
+    
+    Returns
+    -------
+    square_resized: numpy.ndarray
+        resized square image
+    '''
+    top, bottom, left, right = get_retinal_image_diameter_as_horizontal_segment(raw_jpg)
+    return get_square_retinal_img(raw_jpg, top, bottom, left, right)
