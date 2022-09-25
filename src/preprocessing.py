@@ -173,3 +173,19 @@ def make_square(raw_jpg: np.ndarray, threshold: int):
     top, bottom, left, right = get_retinal_image_diameter_as_horizontal_segment(raw_jpg, threshold)
     return get_square_retinal_img(raw_jpg, top, bottom, left, right)
 
+
+def crop_od(original_img, odc_x, odc_y, sidelength):
+    '''
+    will in reality return square of size sidelength+1 
+    '''
+    radius = sidelength/2
+    
+    top = odc_y - radius
+    bottom = odc_y + radius
+
+    left = odc_x - radius
+    right = odc_x + radius
+    
+    return original_img[top:bottom+1, left:right+1]
+
+
