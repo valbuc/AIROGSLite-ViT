@@ -154,7 +154,7 @@ def square_resize(raw_jpg: np.ndarray, side: int, threshold: int):
 
 def make_square(raw_jpg: np.ndarray, threshold: int):
     """
-    cuts out square around retina and resizes image to fox resolution
+    cuts out square around retina and resizes image to fix resolution
 
     Parameters
     ----------
@@ -178,14 +178,12 @@ def crop_od(original_img, odc_x, odc_y, sidelength):
     '''
     will in reality return square of size sidelength+1 
     '''
-    radius = sidelength/2
+    radius = int(sidelength/2)
     
-    top = odc_y - radius
-    bottom = odc_y + radius
+    top = max(0, odc_y - radius)
+    bottom = min(original_img.shape[0] - 1, odc_y + radius)
 
-    left = odc_x - radius
-    right = odc_x + radius
+    left = max(0, odc_x - radius)
+    right = min(original_img.shape[1] - 1, odc_x + radius)
     
     return original_img[top:bottom+1, left:right+1]
-
-
