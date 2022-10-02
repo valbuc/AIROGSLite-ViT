@@ -5,7 +5,7 @@ channels:
   #- defaults
 
 dependencies:
-  - python>=3.7
+  - python>=3.9
   - matplotlib
   - pandas>1.0.0
   - jupyter
@@ -16,6 +16,6 @@ dependencies:
   - conda-forge::tqdm
   - conda-forge::transformers
   - torchvision
-  - pytorch
+  - pytorch-gpu
   - conda-forge::pytorch-lightning
   - conda-forge::pillow

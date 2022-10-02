@@ -1,3 +1,5 @@
+print("ENtered Script")
+
 import os
 from PIL import Image
 from tqdm import tqdm
@@ -129,17 +131,16 @@ class ViTLightningModule(pl.LightningModule):
         return test_dataloader
 
 
-
 if  __name__() == "__main__":
     
     # load data
-    labels = pd.read_csv("data/img_info.csv", index_col=0)
+    labels = pd.read_csv("IMPDIR/data/img_info.csv", index_col=0)
     labels.sort_values("shuf_file_number", inplace=True)
 
     images = []
-    for filename in tqdm(os.listdir("data/ods")[:300]):
-        file = f"data/ods/{filename}"
-        img = Image.open(file)
+    for filename in tqdm(os.listdir("IMPDIR/data/ods")[:300]):
+        filepath = f"IMPDIR/data/ods/{filename}"
+        img = Image.open(filepath)
         images.append(img)
 
     images_train = images[:100]
