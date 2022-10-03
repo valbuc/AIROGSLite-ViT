@@ -1,10 +1,11 @@
 name: airogs
 channels:
   - conda-forge
-  - defaults
+  - pytorch
+  #- defaults
 
 dependencies:
-  - python>=3.7
+  - python>=3.9
   - matplotlib
   - pandas>1.0.0
   - jupyter
@@ -13,3 +14,8 @@ dependencies:
   - numpy
   - conda-forge::opencv
   - conda-forge::tqdm
+  - conda-forge::transformers
+  - torchvision
+  - pytorch-gpu
+  - conda-forge::pytorch-lightning
+  - conda-forge::pillow
