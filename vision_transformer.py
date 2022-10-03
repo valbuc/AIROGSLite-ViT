@@ -134,12 +134,12 @@ class ViTLightningModule(pl.LightningModule):
 if  __name__() == "__main__":
     
     # load data
-    labels = pd.read_csv("IMPDIR/data/img_info.csv", index_col=0)
+    labels = pd.read_csv("data/img_info.csv", index_col=0)
     labels.sort_values("shuf_file_number", inplace=True)
 
     images = []
-    for filename in tqdm(os.listdir("IMPDIR/data/ods")[:300]):
-        filepath = f"IMPDIR/data/ods/{filename}"
+    for filename in tqdm(os.listdir("data/ods")[:300]):
+        filepath = f"data/ods/{filename}"
         img = Image.open(filepath)
         images.append(img)
 
