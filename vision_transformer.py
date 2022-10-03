@@ -37,9 +37,9 @@ _train_transforms = Compose(
         [
             Resize(feature_extractor.size),
             RandomHorizontalFlip(),
-            RandomVerticalFlip(),
-            RandomRotation(45),
-            GaussianBlur(5, (0.1, 0.2)),
+            #RandomVerticalFlip(),
+            RandomRotation(10),
+            #GaussianBlur(5, (0.1, 0.2)),
             ToTensor(),
             normalize,
         ]
@@ -213,7 +213,7 @@ if __name__ == "__main__":
     # for early stopping, see https://pytorch-lightning.readthedocs.io/en/1.0.0/early_stopping.html?highlight=early%20stopping
     early_stop_callback = pl.callbacks.EarlyStopping(
         monitor='validation_loss',
-        patience=10,
+        patience=5,
         strict=False,
         verbose=True,
         mode='min'
