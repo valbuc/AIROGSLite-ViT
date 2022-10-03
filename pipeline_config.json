@@ -1,0 +1,36 @@
+{
+    "Experiment Name": "baseline",
+    "Crop Retina": {
+        "_comment": "Method can be 'Diameter' or 'Skip",
+        "Method": "Diameter",
+        "Threshold": 10,
+        "Original Images Path": "data/shuffled",
+        "Retina Path": "data/retina"
+    },
+    "OD Detection": {
+        "_comment": "Method can be Yolo, Unet, or Skip",
+        "Method": "Yolo",
+        "Retina Path": "data/retina",
+        "Label Path": "data/annotations/csv_all_annotators.csv",
+        "Prediction Path": "data/od_predictions"
+    },
+    "Crop OD": {
+        "_comment": "Method can be Factor or Skip",
+        "Method": "Factor",
+        "Factor": 3,
+        "Original Images Path": "data/shuffled",
+        "Prediction Path": "data/od_predictions",
+        "ODs Path": "data/ods"
+    },
+    "Glaucoma Classification": {
+        "_comment": "Method can be ViT or Skip",
+        "Method": "ViT",
+        "ODs Path": "data/ods",
+        "Label Path": "data/img_info.csv",
+        "Prediction Path": "data/glaucoma_predictions.csv"
+    },
+    "Evaluation": {
+        "True Path": "data/img_info.csv",
+        "Prediction Path": "data/glaucoma_predictions.csv"
+    }
+}
