@@ -15,7 +15,9 @@ dependencies:
   - conda-forge::opencv
   - conda-forge::tqdm
   - conda-forge::transformers
-  - torchvision
-  - pytorch-gpu
+  # PyTorch for deep learning
+  - pytorch::pytorch-gpu
+  - pytorch::torchvision
+  - cudatoolkit=11.3
   - conda-forge::pytorch-lightning
-  - conda-forge::pillow
+  - conda-forge::pillow  

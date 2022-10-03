@@ -309,13 +309,13 @@ def get_json_file_meanpoint_all_annotator(df_for_json):
 
 
 # Df with annotations Rutger
-df_rutger = get_df_of_annotations_file("annotations/Annotation_Rutger_1000_images.csv")
+df_rutger = get_df_of_annotations_file("annotations/Annotation_Rutger_1000_images_corrected.csv")
 
 # Df with annotations Valentin
-df_valentin = get_df_of_annotations_file("annotations/valentin.csv")
+df_valentin = get_df_of_annotations_file("annotations/valentin_corrected.csv")
 
 # Df with annotations fauve
-df_fauve = get_df_of_annotations_file("annotations/Annotations_fwevers.csv")
+df_fauve = get_df_of_annotations_file("annotations/Annotations_fwevers_corrected.csv")
 
 # Df with annotations robert
 df_robert = get_df_of_annotations_file("annotations/robert.csv")
