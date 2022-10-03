@@ -2,14 +2,16 @@ print("ENtered Script")
 
 import os
 from PIL import Image
+import numpy as np
 from tqdm import tqdm
 from transformers import ViTFeatureExtractor, ViTForImageClassification, AdamW
 import pandas as pd
-from torch.utils.data import DataLoader
+from torch.utils.data import random_split, DataLoader, Dataset
 import torch
 import pytorch_lightning as pl
 import torch.nn as nn
-from torchvision.transforms import (Compose, 
+import random
+from torchvision.transforms import (Compose,
                                     Normalize, 
                                     RandomHorizontalFlip,
                                     RandomVerticalFlip,
@@ -17,13 +19,11 @@ from torchvision.transforms import (Compose,
                                     RandomRotation, #  rotation
                                     Resize, 
                                     ToTensor)
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import EarlyStopping
 
 
 # Params
-train_batch_size = 32
-eval_batch_size = 32
+train_batch_size = 64
+eval_batch_size = 64
 
 id2label = {0: "NRG", 1:"RG"}
 label2id = {"NRG": 0, "RG": 1}         
@@ -53,6 +53,63 @@ _val_transforms = Compose(
         ]
     )
 
+def set_seed(seed):
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    np.random.RandomState(seed)
+    random.seed(seed)
+    pl.utilities.seed.seed_everything(seed)
+
+class ClassifierDataset(Dataset):
+    def __init__(self, data_dir, start_idx, end_idx, cache_all=False, transform=None):
+        self.data_dir = data_dir
+        self.transform = transform
+        self.cache_all = cache_all
+        self.data = {}
+        labels = pd.read_csv(os.path.join(data_dir, "img_info.csv"), index_col=0)
+        self.df_labels = labels.set_index("new_file").sort_index(ascending=True)
+        self.df_labels = self.df_labels.iloc[start_idx:end_idx, :]
+        self.filenames = self.df_labels.index.to_numpy()
+
+        if self.cache_all:
+            for i, fn in enumerate(self.filenames):
+                filepath = os.path.join(self.data_dir, fn)
+                img = Image.open(filepath)
+                self.data[i] = img
+                # forcing the image to be loaded (PIL uses lazy loading which is messed up in multiprocessing)
+                px = img.load()
+                px[img.size[0]-1, img.size[1]-1]
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def _get_data(self, idx):
+        cached_val = self.data.get(idx, None)
+        if cached_val:
+            return cached_val
+        else:
+            fn = self.filenames[idx]
+            filepath = os.path.join(self.data_dir, fn)
+            img = Image.open(filepath)
+            return img
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        img = self._get_data(idx)
+
+        # apply transforms
+        if self.transform:
+            img = self.transform(img)
+
+        label = int(self.df_labels.loc[self.filenames[idx]].labels_int)
+        return img, label
+
 def train_transforms(images):
     return [_train_transforms(img) for img in tqdm(images)]
 
@@ -60,15 +117,19 @@ def val_transforms(images):
     return [_val_transforms(img) for img in tqdm(images)]
 
 
-def collate_fn(images):
-    pixel_values = torch.stack([img["pixel_values"] for img in images])
-    labels = torch.LongTensor([img["label"] for img in images])
-    return {"pixel_values": pixel_values, "labels": labels}
+# def collate_fn(images):
+#     pixel_values = torch.stack([img["pixel_values"] for img in images])
+#     labels = torch.LongTensor([img["label"] for img in images])
+#     return {"pixel_values": pixel_values, "labels": labels}
 
+def collate_fn(images):
+    pixel_values = torch.stack([img[0] for img in images])
+    labels = torch.LongTensor([img[1] for img in images])
+    return {"pixel_values": pixel_values, "labels": labels}
 
 # define model
 class ViTLightningModule(pl.LightningModule):
-    def __init__(self, num_labels=10):
+    def __init__(self):
         super(ViTLightningModule, self).__init__()
         self.vit = ViTForImageClassification.from_pretrained(
             'google/vit-base-patch32-384',
@@ -131,44 +192,28 @@ class ViTLightningModule(pl.LightningModule):
         return test_dataloader
 
 
-if  __name__() == "__main__":
+if __name__ == "__main__":
     
     # load data
-    labels = pd.read_csv("data/img_info.csv", index_col=0)
-    labels.sort_values("shuf_file_number", inplace=True)
+    labels = pd.read_csv("./data/ods/img_info.csv", index_col=0)
+    n_images = labels.shape[0]
+    #n_images = 300
 
-    images = []
-    for filename in tqdm(os.listdir("data/ods")[:300]):
-        filepath = f"data/ods/{filename}"
-        img = Image.open(filepath)
-        images.append(img)
+    train_end_idx = int(n_images * 0.6)
+    val_end_idx = int(n_images * 0.8)
 
-    images_train = images[:100]
-    images_val = images[100:200]
-    images_test = images[200:]
+    train_ds = ClassifierDataset('./data/ods', cache_all=True, start_idx=0, end_idx=train_end_idx, transform=_train_transforms)
+    val_ds = ClassifierDataset('./data/ods', cache_all=True, start_idx=train_end_idx, end_idx=val_end_idx, transform=_val_transforms)
+    test_ds = ClassifierDataset('./data/ods', start_idx=val_end_idx, end_idx=n_images, transform=_val_transforms)
 
-    labels_list = labels.labels_int.to_list()
-    labels_train = labels_list[:100]
-    labels_val = labels_list[100:200]
-    labels_test = labels_list[200:]
-
-    # transform data
-    train_transformed = train_transforms(images_train)
-    val_transformed = val_transforms(images_val)
-    test_transformed = val_transforms(images_test)
-
-    train_ds = [{"pixel_values": train_transformed[i], "label": int(labels_train[i])} for i in range(100)]
-    val_ds = [{"pixel_values": val_transformed[i], "label": int(labels_val[i])} for i in range(100)]
-    test_ds = [{"pixel_values": test_transformed[i], "label": int(labels_test[i])} for i in range(100)]
-
-    train_dataloader = DataLoader(train_ds, shuffle=True, collate_fn=collate_fn, batch_size=train_batch_size)
-    val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=eval_batch_size)
-    test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=eval_batch_size)
+    train_dataloader = DataLoader(train_ds, shuffle=True, collate_fn=collate_fn, batch_size=train_batch_size, num_workers=4, persistent_workers=True)
+    val_dataloader = DataLoader(val_ds, collate_fn=collate_fn, batch_size=eval_batch_size, num_workers=4, persistent_workers=True)
+    test_dataloader = DataLoader(test_ds, collate_fn=collate_fn, batch_size=eval_batch_size, num_workers=4, persistent_workers=True)
 
     # for early stopping, see https://pytorch-lightning.readthedocs.io/en/1.0.0/early_stopping.html?highlight=early%20stopping
-    early_stop_callback = EarlyStopping(
-        monitor='val_loss',
-        patience=3,
+    early_stop_callback = pl.callbacks.EarlyStopping(
+        monitor='validation_loss',
+        patience=10,
         strict=False,
         verbose=True,
         mode='min'
@@ -176,13 +221,13 @@ if  __name__() == "__main__":
 
     model = ViTLightningModule()
     #trainer = Trainer(gpus=1, callbacks=[EarlyStopping(monitor='validation_loss')], max_epochs=30)
-    trainer = Trainer(
+    trainer = pl.Trainer(
         accelerator="auto",
-        callbacks=[EarlyStopping(monitor='validation_loss')],
-        max_epochs=30,
+        #callbacks=[EarlyStopping(monitor='validation_loss', patience=10)],
+        callbacks=early_stop_callback,
+        max_epochs=100,
         auto_lr_find=True,
         deterministic=True,
-        max_epochs = 100,
     )
     trainer.fit(model)
 
