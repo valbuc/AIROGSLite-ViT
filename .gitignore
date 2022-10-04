@@ -134,3 +134,8 @@ dmypy.json
 
 # Editor
 .idea/
+
+# generated files
+annotations/avg_optic_disk*
+csv_all_annotators.csv
+
