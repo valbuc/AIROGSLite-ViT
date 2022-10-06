@@ -180,10 +180,24 @@ def crop_od(original_img, odc_x, odc_y, sidelength):
     '''
     radius = int(sidelength/2)
     
-    top = max(0, odc_y - radius)
-    bottom = min(original_img.shape[0] - 1, odc_y + radius)
+    vertical_diff = 0
+    top = odc_y - radius
+    if top < 0:
+        vertical_diff = - top
+        top = 0
+    bottom = odc_y + radius + vertical_diff
+    if bottom > original_img.shape[0]:
+        top -= bottom - original_img.shape[0]
+        bottom = original_img.shape[0] - 1
 
-    left = max(0, odc_x - radius)
-    right = min(original_img.shape[1] - 1, odc_x + radius)
+    horizontal_diff = 0
+    left = odc_x - radius
+    if left < 0:
+        horizontal_diff = - left
+        left = 0
+    right = odc_x + radius + horizontal_diff
+    if right > original_img.shape[1]:
+        left -= right - original_img.shape[1]
+        right = original_img.shape[1] - 1
     
     return original_img[top:bottom+1, left:right+1]
