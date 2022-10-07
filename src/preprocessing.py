@@ -201,3 +201,31 @@ def crop_od(original_img, odc_x, odc_y, sidelength):
         right = original_img.shape[1] - 1
     
     return original_img[top:bottom+1, left:right+1]
+
+
+def crop_od_fill_if_needed(original_img, odc_x, odc_y, sidelength, fill_value=0):
+    half_side_1 = int(sidelength / 2)
+    half_side_2 = sidelength - half_side_1
+
+    top = odc_y - half_side_1
+    clipped_top = max(0, top)
+    add_top = -min(top, 0)
+
+    bottom = odc_y + half_side_2
+    clipped_bottom = min(original_img.shape[0], bottom)
+    add_bottom = -min(0, original_img.shape[0]-bottom)
+
+    left = odc_x - half_side_1
+    clipped_left = max(0, left)
+    add_left = -min(0, left)
+
+    right = odc_x + half_side_2
+    clipped_right = min(original_img.shape[1], right)
+    add_right = -min(0, original_img.shape[1]-right)
+
+    #print(add_top, add_bottom, add_left, add_right)
+    new_img = np.full(shape=(sidelength, sidelength, original_img.shape[2]), fill_value=fill_value, dtype=original_img.dtype)
+    new_img[add_top:sidelength-add_bottom, add_left:sidelength-add_right, :] = \
+        original_img[clipped_top:clipped_bottom, clipped_left:clipped_right, :]
+
+    return new_img
