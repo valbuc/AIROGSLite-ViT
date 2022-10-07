@@ -1,6 +1,7 @@
 import time
 from argparse import ArgumentParser
 import os
+from sys import float_info
 from PIL import Image
 import random
 import numpy as np
@@ -17,6 +18,7 @@ from transformers import ViTFeatureExtractor, ViTForImageClassification
 
 # id2label = {0: "NRG", 1:"RG"}
 # label2id = {"NRG": 0, "RG": 1}
+# this is binary classification so we only need 1 class (the positive class)
 id2label = {1:"RG"}
 label2id = {"RG": 1}
 
@@ -55,7 +57,7 @@ class ClassifierDataset(Dataset):
         self.transform = transform
         self.cache_all = cache_all
         self.data = {}
-        labels = pd.read_csv(os.path.join(data_dir, "img_info.csv"), index_col=0)
+        labels = pd.read_csv(os.path.join(data_dir, "img_info_with_labels.csv"), index_col=0)
         self.df_labels = labels.set_index("new_file").sort_index(ascending=True)
         self.df_labels = self.df_labels.iloc[start_idx:end_idx, :]
         self.filenames = self.df_labels.index.to_numpy()
@@ -105,7 +107,7 @@ class MyDataModule(pl.LightningDataModule):
         parser.add_argument('--batch_size', default=128, type=int)
         parser.add_argument('--use_validation_set_for_test', action="store_true")
         parser.add_argument('--train_prop_end', default=0.6, type=float)
-        parser.add_argument('--val_prop_end', default=0.8, type=int)
+        parser.add_argument('--val_prop_end', default=0.8, type=float)
         return parent_parser
 
     def __init__(self, args):
@@ -126,7 +128,7 @@ class MyDataModule(pl.LightningDataModule):
             transforms.RandomHorizontalFlip(),
         ])
 
-        self.labels = pd.read_csv(os.path.join(args.data_dir, "img_info.csv"), index_col=0)
+        self.labels = pd.read_csv(os.path.join(args.data_dir, "img_info_with_labels.csv"), index_col=0)
         n_images = self.labels.shape[0]
         #n_images = 300
 
@@ -158,6 +160,47 @@ class MyDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(self.test_ds, batch_size=self.batch_size,
                           num_workers=6, persistent_workers=True)
+
+from typing import Any, Optional
+
+class SensAtSpec(torchmetrics.Metric):
+    r"""
+    """
+    is_differentiable: bool = False
+    higher_is_better: bool = True
+    full_state_update: bool = False
+
+    def __init__(
+        self,
+        at_specificity: Optional[float] = 0.95,
+        eps=float_info.epsilon,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.at_specificity = at_specificity
+        self.epsilon = eps
+        self.roc_metric = torchmetrics.ROC()
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:  # type: ignore
+        """Update state with predictions and targets.
+
+        Args:
+            preds: Predictions from model (probabilities, or labels)
+            target: Ground truth labels
+        """
+        self.roc_metric.update(preds, target)
+
+    def compute(self) -> torch.Tensor:
+        fpr, tpr, threshes = self.roc_metric.compute()
+        spec = 1 - fpr
+        operating_points_with_good_spec = spec >= (self.at_specificity - self.epsilon)
+        max_tpr = tpr[operating_points_with_good_spec][-1]
+        #operating_point = torch.argwhere(operating_points_with_good_spec).squeeze()[-1]
+        #operating_tpr = tpr[operating_point]
+        # assert max_tpr == operating_tpr or (np.isnan(max_tpr) and np.isnan(operating_tpr)), f'{max_tpr} != {operating_tpr}'
+        # assert max_tpr == max(tpr[operating_points_with_good_spec]) or (np.isnan(max_tpr) and max(tpr[operating_points_with_good_spec])), \
+        #     f'{max_tpr} == {max(tpr[operating_points_with_good_spec])}'
+        return max_tpr
 
 # define model
 class LitClassifier(pl.LightningModule):
@@ -202,6 +245,7 @@ class LitClassifier(pl.LightningModule):
                 # since specificity = 1 - false positive rate <=> partial auroc for 0-10 false positive rate
                 # <=> max_fpr = 0.1
                 'partial_auroc': torchmetrics.AUROC(max_fpr=0.1),
+                'sens_at_95_spec': SensAtSpec(at_specificity=0.95)
             }
             for k, v in self.metrics[metric_cat].items():
                 self.register_module(f'metric_{metric_cat}_{k}', v)
