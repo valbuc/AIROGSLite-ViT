@@ -91,7 +91,7 @@ def get_square_retinal_img(raw_jpg: np.ndarray, top: int, bottom: int, left: int
     return square, (remtop, rembottom, remleft, remright), (addtop, addbottom, addleft, addright)
 
 
-def resize_square(img: np.ndarray, side: int):
+def resize_square(img: np.ndarray, side: int, interpolation: int= cv2.INTER_LINEAR):
     """
     resizes sqaure image to fixed resolution
 
@@ -101,16 +101,18 @@ def resize_square(img: np.ndarray, side: int):
         the original square image
     side: int
         number of pixels per side
+    interpolation: int
+        interpolation method
 
     Returns
     -------
     square_resized: numpy.ndarray
         resized square image
     """
-    return cv2.resize(img, (side, side), interpolation=cv2.INTER_LINEAR)
+    return cv2.resize(img, (side, side), interpolation=interpolation)
 
 
-def square_resize(raw_jpg: np.ndarray, side: int, threshold: int):
+def square_resize(raw_jpg: np.ndarray, side: int, threshold: int, interpolation: int = cv2.INTER_LINEAR):
     """
     cuts out square around retina and resizes image to fixed resolution
 
@@ -122,6 +124,8 @@ def square_resize(raw_jpg: np.ndarray, side: int, threshold: int):
         number of pixels per side
     threshold: int
         threshold value used for determining how much can be cut from the image edges
+    interpolation: int
+        interpolation method for the resize
 
     Returns
     -------
@@ -137,7 +141,7 @@ def square_resize(raw_jpg: np.ndarray, side: int, threshold: int):
     top, bottom, left, right = get_retinal_image_diameter_as_horizontal_segment(raw_jpg, threshold)
     retinal_img_sq, cutting, padding = get_square_retinal_img(raw_jpg, top, bottom, left, right)
     assert retinal_img_sq.shape[0] == retinal_img_sq.shape[1]
-    new_img = resize_square(retinal_img_sq, side)
+    new_img = resize_square(retinal_img_sq, side, interpolation)
     assert side == new_img.shape[0]
     assert side == new_img.shape[1]
     scaling_factor = retinal_img_sq.shape[0] / side
