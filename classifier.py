@@ -15,12 +15,13 @@ from torchvision import transforms, models
 from torch.utils.data import DataLoader, Dataset
 import pytorch_lightning as pl
 from transformers import get_cosine_schedule_with_warmup
+from src.transformations import EqualizeTransform
 
 
 # id2label = {0: "NRG", 1:"RG"}
 # label2id = {"NRG": 0, "RG": 1}
 # this is binary classification so we only need 1 class (the positive class)
-id2label = {1:"RG"}
+id2label = {1: "RG"}
 label2id = {"RG": 1}
 
 # _train_transforms = Compose(
@@ -46,6 +47,7 @@ def set_seed(seed):
     np.random.RandomState(seed)
     random.seed(seed)
     pl.utilities.seed.seed_everything(seed)
+
 
 class ClassifierDataset(Dataset):
     def __init__(self, data_dir, start_idx, end_idx, cache_all=False, transform=None):
@@ -92,24 +94,26 @@ class ClassifierDataset(Dataset):
         label = int(self.df_labels.loc[self.filenames[idx]].labels_int)
         return img, label
 
-class MyDataModule(pl.LightningDataModule):
 
+class MyDataModule(pl.LightningDataModule):
     @staticmethod
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group(
-            title="MyDataModule",
-            description="Class to organize and manage the data"
+            title="MyDataModule", description="Class to organize and manage the data"
         )
-        parser.add_argument('--batch_size', default=128, type=int)
-        parser.add_argument('--use_validation_set_for_test', action="store_true")
-        parser.add_argument('--train_prop_end', default=0.6, type=float)
-        parser.add_argument('--val_prop_end', default=0.8, type=float)
+        parser.add_argument("--equalize", choices=["no", "yes", "IgnoreBlack"], default="no")
+        parser.add_argument("--batch_size", default=128, type=int)
+        parser.add_argument("--use_validation_set_for_test", action="store_true")
+        parser.add_argument("--train_prop_end", default=0.6, type=float)
+        parser.add_argument("--val_prop_end", default=0.8, type=float)
         return parent_parser
 
     def __init__(self, args, backbone_transform):
         super().__init__()
 
+        equalizer = EqualizeTransform(args)
         self.train_transforms = transforms.Compose([
+            equalizer,
             transforms.ToTensor(),
             backbone_transform,
             transforms.RandomHorizontalFlip(),
@@ -120,6 +124,7 @@ class MyDataModule(pl.LightningDataModule):
         ])
 
         self.test_transforms = transforms.Compose([
+            equalizer,
             transforms.ToTensor(),
             backbone_transform,
         ])
@@ -190,12 +195,13 @@ class SensAtSpec(torchmetrics.Metric):
         spec = 1 - fpr
         operating_points_with_good_spec = spec >= (self.at_specificity - self.epsilon)
         max_tpr = tpr[operating_points_with_good_spec][-1]
-        #operating_point = torch.argwhere(operating_points_with_good_spec).squeeze()[-1]
-        #operating_tpr = tpr[operating_point]
+        # operating_point = torch.argwhere(operating_points_with_good_spec).squeeze()[-1]
+        # operating_tpr = tpr[operating_point]
         # assert max_tpr == operating_tpr or (np.isnan(max_tpr) and np.isnan(operating_tpr)), f'{max_tpr} != {operating_tpr}'
         # assert max_tpr == max(tpr[operating_points_with_good_spec]) or (np.isnan(max_tpr) and max(tpr[operating_points_with_good_spec])), \
         #     f'{max_tpr} == {max(tpr[operating_points_with_good_spec])}'
         return max_tpr
+
 
 # define model
 class LitClassifier(pl.LightningModule):
@@ -340,7 +346,8 @@ class LitClassifier(pl.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
-        self.lr_schedulers().step()
+        if self.lr_schedulers():
+            self.lr_schedulers().step()
         loss = self.common_step(batch, 'train')
         return loss
     
@@ -431,9 +438,8 @@ def cli_main():
     set_seed(args.seed)
 
     tb_logger = pl.loggers.TensorBoardLogger(
-        save_dir='experiment_logs',
-        name=args.experiment_name,
-        default_hp_metric=False)
+        save_dir="experiment_logs", name=args.experiment_name, default_hp_metric=False
+    )
 
     early_stop_callback = pl.callbacks.EarlyStopping(
         monitor=args.es_var,
@@ -443,7 +449,9 @@ def cli_main():
         mode=args.es_mode,
     )
 
-    checkpointing_callback = pl.callbacks.ModelCheckpoint(monitor=args.es_var, save_top_k=1, mode=args.es_mode)
+    checkpointing_callback = pl.callbacks.ModelCheckpoint(
+        monitor=args.es_var, save_top_k=1, mode=args.es_mode
+    )
 
     model = LitClassifier(**args.__dict__)
     data = MyDataModule(args, model.backbone_transform)
@@ -456,7 +464,7 @@ def cli_main():
         auto_lr_find=False,
         deterministic=True,
     )
-    #trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+    # trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
     trainer.fit(model, data)
 

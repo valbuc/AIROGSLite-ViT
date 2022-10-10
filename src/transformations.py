@@ -110,3 +110,18 @@ class Normalize(object):
 
     def __repr__(self):
         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
+
+
+class EqualizeTransform(object):
+    def __init__(self, args):
+        self.equalize = None
+        if args.equalize.lower() == 'ignoreblack':
+            self.equalize = EqualizeIgnoreBlack(9, 69)
+        elif args.equalize.lower() == 'yes':
+            self.equalize = Equalize()
+
+    def __call__(self, sample):
+        if self.equalize:
+            return self.equalize(sample)
+        else:
+            return sample
