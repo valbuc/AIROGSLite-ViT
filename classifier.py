@@ -2,6 +2,7 @@ import time
 from argparse import ArgumentParser
 import os
 from sys import float_info
+from typing import Any, Optional
 from PIL import Image
 import random
 import numpy as np
@@ -10,10 +11,10 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torchmetrics
-from torchvision import transforms
+from torchvision import transforms, models
 from torch.utils.data import DataLoader, Dataset
 import pytorch_lightning as pl
-from transformers import ViTFeatureExtractor, ViTForImageClassification
+from transformers import get_cosine_schedule_with_warmup
 
 
 # id2label = {0: "NRG", 1:"RG"}
@@ -21,11 +22,6 @@ from transformers import ViTFeatureExtractor, ViTForImageClassification
 # this is binary classification so we only need 1 class (the positive class)
 id2label = {1:"RG"}
 label2id = {"RG": 1}
-
-feature_extractor = ViTFeatureExtractor.from_pretrained("google/vit-base-patch32-384")
-
-# define preprocessing and augmentation
-normalize = transforms.Normalize(mean=feature_extractor.image_mean, std=feature_extractor.image_std)
 
 # _train_transforms = Compose(
 #         [
@@ -57,7 +53,7 @@ class ClassifierDataset(Dataset):
         self.transform = transform
         self.cache_all = cache_all
         self.data = {}
-        labels = pd.read_csv(os.path.join(data_dir, "img_info_with_labels.csv"), index_col=0)
+        labels = pd.read_csv("./data/img_info_with_labels.csv", index_col=0)
         self.df_labels = labels.set_index("new_file").sort_index(ascending=True)
         self.df_labels = self.df_labels.iloc[start_idx:end_idx, :]
         self.filenames = self.df_labels.index.to_numpy()
@@ -110,25 +106,25 @@ class MyDataModule(pl.LightningDataModule):
         parser.add_argument('--val_prop_end', default=0.8, type=float)
         return parent_parser
 
-    def __init__(self, args):
+    def __init__(self, args, backbone_transform):
         super().__init__()
 
-        self.train_transforms = transforms.Compose([transforms.ToTensor(),
-                                                    normalize,
-                                                    transforms.RandomHorizontalFlip(),
-                                                    transforms.RandomApply([
-                                                        transforms.RandomAffine(degrees=10, translate=None,
-                                                                                scale=(1.0, 1.2))],
-                                                        p=0.5)
-                                                    ])
+        self.train_transforms = transforms.Compose([
+            transforms.ToTensor(),
+            backbone_transform,
+            transforms.RandomHorizontalFlip(),
+            # transforms.RandomApply([
+            #     transforms.RandomAffine(degrees=10, translate=None,
+            #                             scale=(1.0, 1.2))],
+            # p=0.5)
+        ])
 
         self.test_transforms = transforms.Compose([
             transforms.ToTensor(),
-            normalize,
-            transforms.RandomHorizontalFlip(),
+            backbone_transform,
         ])
 
-        self.labels = pd.read_csv(os.path.join(args.data_dir, "img_info_with_labels.csv"), index_col=0)
+        self.labels = pd.read_csv("./data/img_info_with_labels.csv", index_col=0)
         n_images = self.labels.shape[0]
         #n_images = 300
 
@@ -161,7 +157,6 @@ class MyDataModule(pl.LightningDataModule):
         return DataLoader(self.test_ds, batch_size=self.batch_size,
                           num_workers=6, persistent_workers=True)
 
-from typing import Any, Optional
 
 class SensAtSpec(torchmetrics.Metric):
     r"""
@@ -216,18 +211,90 @@ class LitClassifier(pl.LightningModule):
         parser.add_argument('--sgd_nesterov', type=bool, default=False)
         parser.add_argument('--sgd_momentum', type=float, default=0.9)
         parser.add_argument('--adamw_amsgrad', type=bool, default=False)
+        parser.add_argument('--backbone',
+                            choices=[
+                                'google/vit-base-patch32-384',
+                                'microsoft/swin-base-patch4-window12-384-in22k',
+                                'microsoft/swin-large-patch4-window12-384-in22k',
+                                'tv-224-vit_b_32.IMAGENET1K_V1',
+                                'tv-224bic-vit_b_16.IMAGENET1K_SWAG_LINEAR_V1',
+                                'tv-384bic-vit_b_16.IMAGENET1K_SWAG_E2E_V1',
+                                'tv-224-swin_b.IMAGENET1K_V1',
+                                'tv-224-resnext50_32x4d.IMAGENET1K_V2'
+                            ], default='hf-vit-384')
         return parent_parser
 
     def __init__(self, **kwargs):
         super(LitClassifier, self).__init__()
-        self.backbone = ViTForImageClassification.from_pretrained(
-            'google/vit-base-patch32-384',
-            num_labels=1,
-            id2label=id2label,
-            label2id=label2id,
-            ignore_mismatched_sizes=True
-        )
         self.hparams.update(kwargs)
+        if self.hparams['backbone'] == 'google/vit-base-patch32-384':
+            from transformers import ViTFeatureExtractor, ViTForImageClassification
+            self.backbone = ViTForImageClassification.from_pretrained(
+                self.hparams['backbone'], num_labels=1, id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True
+            )
+            feature_extractor = ViTFeatureExtractor.from_pretrained(self.hparams['backbone'])
+            self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
+                                                           std=feature_extractor.image_std)
+        elif self.hparams['backbone'] == 'microsoft/swin-base-patch4-window12-384-in22k':
+                from transformers import AutoFeatureExtractor, SwinForImageClassification
+                self.backbone = SwinForImageClassification.from_pretrained(
+                    self.hparams['backbone'], num_labels=1, id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True
+                )
+                feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
+                self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
+                                                               std=feature_extractor.image_std)
+        elif self.hparams['backbone'] == 'microsoft/swin-large-patch4-window12-384-in22k':
+                from transformers import AutoFeatureExtractor, SwinForImageClassification
+                self.backbone = SwinForImageClassification.from_pretrained(
+                    self.hparams['backbone'], num_labels=1, id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True
+                )
+                feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
+                self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
+                                                               std=feature_extractor.image_std)
+        elif self.hparams['backbone'] == 'tv-224-vit_b_32.IMAGENET1K_V1':
+            weights = models.ViT_B_32_Weights.IMAGENET1K_V1
+            self.backbone = models.vit_b_32(weights=weights)
+            self.backbone.heads[0] = nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            self.backbone_transform = transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
+        elif self.hparams['backbone'] == 'tv-224bic-vit_b_16.IMAGENET1K_SWAG_LINEAR_V1':
+            # These weights are composed of the original frozen `SWAG <https://arxiv.org/abs/2201.08371>`_ trunk
+            # weights and a linear classifier learnt on top of them trained on ImageNet-1K data.
+            weights = models.ViT_B_16_Weights.IMAGENET1K_SWAG_LINEAR_V1
+            self.backbone = models.vit_b_16(weights=weights)
+            self.backbone.heads[0] = nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            self.backbone_transform = transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
+        elif self.hparams['backbone'] == 'tv-384bic-vit_b_16.IMAGENET1K_SWAG_E2E_V1':
+            # These weights are learnt via transfer learning by end-to-end fine-tuning the original
+            # `SWAG <https://arxiv.org/abs/2201.08371>`_ weights on ImageNet-1K data.
+            self.backbone = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_SWAG_E2E_V1)
+            self.backbone.heads[0] = nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            self.backbone_transform = transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
+        elif self.hparams['backbone'] == 'tv-224-swin_b.IMAGENET1K_V1':
+            self.backbone = models.swin_b(weights=models.Swin_B_Weights.IMAGENET1K_V1)
+            self.backbone.head = nn.Linear(self.backbone.head.in_features, 1, bias=True)
+            self.backbone_transform = transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
+        elif self.hparams['backbone'] == 'tv-224-resnext50_32x4d.IMAGENET1K_V2':
+            self.backbone = models.resnext50_32x4d(weights=models.ResNeXt50_32X4D_Weights.IMAGENET1K_V2)
+            # We change the output layers to make the model compatible to our data
+            block_expansion = 4  # from the resnet code
+            self.backbone.fc = nn.Linear(512 * block_expansion, 1, bias=True)
+            self.backbone_transform = transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
+
         self.save_hyperparameters()
 
         self.criterion = nn.BCEWithLogitsLoss()
@@ -251,9 +318,12 @@ class LitClassifier(pl.LightningModule):
                 self.register_module(f'metric_{metric_cat}_{k}', v)
 
     def forward(self, pixel_values):
-        outputs = self.backbone(pixel_values=pixel_values)
-        return outputs.logits
-        
+        outputs = self.backbone(pixel_values)
+        if type(outputs) == torch.Tensor:
+            return outputs
+        else:
+            return outputs.logits
+
     def common_step(self, batch, metric_category):
         pixel_values, labels = batch
         logits = self(pixel_values).squeeze()
@@ -270,6 +340,7 @@ class LitClassifier(pl.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
+        self.lr_schedulers().step()
         loss = self.common_step(batch, 'train')
         return loss
     
@@ -287,18 +358,47 @@ class LitClassifier(pl.LightningModule):
         self.logger.log_hyperparams(self.hparams, {f'test_{k}': 0 for k in self.metrics['test'].keys()})
 
     def configure_optimizers(self):
-        # We could make the optimizer more fancy by adding a scheduler and specifying which parameters do
-        # not require weight_decay but just using AdamW out-of-the-box works fine
+        def _add_weight_decay(model, weight_decay):
+            decay = []
+            no_decay = []
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if len(param.shape) == 1 or ('.bias' in name.lower() or 'norm' in name.lower()):
+                    if self.hparams['weight_decay_factor'] > 0:
+                        print(f'parameter {name} disabling weight decay')
+                    no_decay.append(param)
+                else:
+                    decay.append(param)
+            return [
+                {'params': no_decay, 'weight_decay': 0.},
+                {'params': decay, 'weight_decay': weight_decay}]
+
+        grouped_parameters = _add_weight_decay(self, weight_decay=self.hparams['weight_decay_factor']*self.hparams['lr'])
+
+        optim = None
         if self.hparams['optimizer'] == 'adamw':
-            return torch.optim.AdamW(self.parameters(),
+            optim = torch.optim.AdamW(grouped_parameters,
                                      lr=self.hparams['lr'],
-                                     weight_decay=self.hparams['weight_decay_factor']*self.hparams['lr'],
                                      amsgrad=self.hparams['adamw_amsgrad'])
         elif self.hparams['optimizer'] == 'sgd':
-            return torch.optim.SGD(self.parameters(),
+            optim = torch.optim.SGD(grouped_parameters,
                                    lr=self.hparams['lr'],
                                    momentum=self.hparams['sgd_momentum'],
                                    nesterov=self.hparams['sgd_nesterov'])
+        assert optim is not None
+        ret_dict = {'optimizer': optim}
+
+        if self.hparams['use_lr_scheduler']:
+            steps_per_epoch = 15000 * self.hparams['train_prop_end'] / self.hparams['batch_size']
+            print(f'Estimated steps_per_epoch {steps_per_epoch}')
+            lr_scheduler = get_cosine_schedule_with_warmup(
+                optim,
+                num_warmup_steps=int(steps_per_epoch*self.hparams['lr_warmup_epochs']),
+                num_training_steps=int(steps_per_epoch*self.hparams['lr_training_epochs']))
+            ret_dict['lr_scheduler'] = lr_scheduler
+
+        return ret_dict
 
 
 def cli_main():
@@ -315,6 +415,9 @@ def cli_main():
     parser.add_argument('--es_var', choices=['val_f1', 'val_loss', 'val_partial_auroc', 'val_auroc'], default='val_partial_auroc')
     parser.add_argument('--es_mode', choices=['min', 'max'], default='max')
     parser.add_argument('--data_dir', default='./data/ods')
+    parser.add_argument('--use_lr_scheduler', action='store_true')
+    parser.add_argument('--lr_training_epochs', default=20, type=int)
+    parser.add_argument('--lr_warmup_epochs', default=1, type=int)
     parser = MyDataModule.add_argparse_args(parser)
     parser = LitClassifier.add_model_specific_args(parser)
     args = parser.parse_args()
@@ -342,14 +445,14 @@ def cli_main():
 
     checkpointing_callback = pl.callbacks.ModelCheckpoint(monitor=args.es_var, save_top_k=1, mode=args.es_mode)
 
-    data = MyDataModule(args)
     model = LitClassifier(**args.__dict__)
+    data = MyDataModule(args, model.backbone_transform)
 
     trainer = pl.Trainer(
         accelerator="auto",
         logger=tb_logger,
         callbacks=[early_stop_callback, checkpointing_callback],
-        max_epochs=100,
+        max_epochs=1000,
         auto_lr_find=False,
         deterministic=True,
     )
