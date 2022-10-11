@@ -217,6 +217,11 @@ class LitClassifier(pl.LightningModule):
         parser.add_argument('--sgd_nesterov', type=bool, default=False)
         parser.add_argument('--sgd_momentum', type=float, default=0.9)
         parser.add_argument('--adamw_amsgrad', type=bool, default=False)
+        parser.add_argument('--dropout', type=float, default=0.0)
+        parser.add_argument('--label_smoothing', type=float, default=0.0)
+        parser.add_argument('--class_balancing', choices=['focal_loss', 'pos_weight', 'none'], default='none')
+        parser.add_argument('--focal_loss_alpha', type=float, default=0.5)
+        parser.add_argument('--focal_loss_gamma', type=float, default=2)
         parser.add_argument('--backbone',
                             choices=[
                                 'google/vit-base-patch32-384',
@@ -238,6 +243,10 @@ class LitClassifier(pl.LightningModule):
             self.backbone = ViTForImageClassification.from_pretrained(
                 self.hparams['backbone'], num_labels=1, id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True
             )
+            self.backbone.classifier = nn.Sequential(
+                nn.Dropout(self.hparams['dropout']),
+                self.backbone.classifier
+            )
             feature_extractor = ViTFeatureExtractor.from_pretrained(self.hparams['backbone'])
             self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
                                                            std=feature_extractor.image_std)
@@ -245,6 +254,10 @@ class LitClassifier(pl.LightningModule):
                 from transformers import AutoFeatureExtractor, SwinForImageClassification
                 self.backbone = SwinForImageClassification.from_pretrained(
                     self.hparams['backbone'], num_labels=1, id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True
+                )
+                self.backbone.classifier = nn.Sequential(
+                    nn.Dropout(self.hparams['dropout']),
+                    self.backbone.classifier
                 )
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
@@ -254,13 +267,20 @@ class LitClassifier(pl.LightningModule):
                 self.backbone = SwinForImageClassification.from_pretrained(
                     self.hparams['backbone'], num_labels=1, id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True
                 )
+                self.backbone.classifier = nn.Sequential(
+                    nn.Dropout(self.hparams['dropout']),
+                    self.backbone.classifier
+                )
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
                                                                std=feature_extractor.image_std)
         elif self.hparams['backbone'] == 'tv-224-vit_b_32.IMAGENET1K_V1':
             weights = models.ViT_B_32_Weights.IMAGENET1K_V1
             self.backbone = models.vit_b_32(weights=weights)
-            self.backbone.heads[0] = nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            self.backbone.heads[0] = nn.Sequential(
+                nn.Dropout(self.hparams['dropout']),
+                nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            )
             self.backbone_transform = transforms.Normalize(
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
@@ -270,7 +290,10 @@ class LitClassifier(pl.LightningModule):
             # weights and a linear classifier learnt on top of them trained on ImageNet-1K data.
             weights = models.ViT_B_16_Weights.IMAGENET1K_SWAG_LINEAR_V1
             self.backbone = models.vit_b_16(weights=weights)
-            self.backbone.heads[0] = nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            self.backbone.heads[0] = nn.Sequential(
+                nn.Dropout(self.hparams['dropout']),
+                nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            )
             self.backbone_transform = transforms.Normalize(
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
@@ -279,14 +302,20 @@ class LitClassifier(pl.LightningModule):
             # These weights are learnt via transfer learning by end-to-end fine-tuning the original
             # `SWAG <https://arxiv.org/abs/2201.08371>`_ weights on ImageNet-1K data.
             self.backbone = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_SWAG_E2E_V1)
-            self.backbone.heads[0] = nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            self.backbone.heads[0] = nn.Sequential(
+                nn.Dropout(self.hparams['dropout']),
+                nn.Linear(self.backbone.heads[0].in_features, 1, bias=True)
+            )
             self.backbone_transform = transforms.Normalize(
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
         elif self.hparams['backbone'] == 'tv-224-swin_b.IMAGENET1K_V1':
             self.backbone = models.swin_b(weights=models.Swin_B_Weights.IMAGENET1K_V1)
-            self.backbone.head = nn.Linear(self.backbone.head.in_features, 1, bias=True)
+            self.backbone.head = nn.Sequential(
+                nn.Dropout(self.hparams['dropout']),
+                nn.Linear(self.backbone.head.in_features, 1, bias=True)
+            )
             self.backbone_transform = transforms.Normalize(
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
@@ -295,7 +324,10 @@ class LitClassifier(pl.LightningModule):
             self.backbone = models.resnext50_32x4d(weights=models.ResNeXt50_32X4D_Weights.IMAGENET1K_V2)
             # We change the output layers to make the model compatible to our data
             block_expansion = 4  # from the resnet code
-            self.backbone.fc = nn.Linear(512 * block_expansion, 1, bias=True)
+            self.backbone.fc = nn.Sequential(
+                nn.Dropout(self.hparams['dropout']),
+                nn.Linear(512 * block_expansion, 1, bias=True)
+            )
             self.backbone_transform = transforms.Normalize(
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
@@ -303,7 +335,19 @@ class LitClassifier(pl.LightningModule):
 
         self.save_hyperparameters()
 
-        self.criterion = nn.BCEWithLogitsLoss()
+        if self.hparams['class_balancing'] == 'pos_weight':
+            self.class_weights = torch.from_numpy(np.array([1, 13500/1500]))
+            self.criterion = nn.BCEWithLogitsLoss(pos_weight=self.class_weights[1])
+        elif self.hparams['class_balancing'] == 'focal_loss':
+            from torchvision.ops import focal_loss
+            def _criterion(logits, target):
+                #alpha = 1-1500/13500
+                alpha = self.hparams['focal_loss_alpha']
+                gamma = self.hparams['focal_loss_gamma']
+                return focal_loss.sigmoid_focal_loss(logits, target, alpha, gamma, reduction='mean')
+            self.criterion = _criterion
+        else:
+            self.criterion = nn.BCEWithLogitsLoss()
 
         self.metrics = {}
         for metric_cat in ['train', 'val', 'test']:
@@ -334,7 +378,11 @@ class LitClassifier(pl.LightningModule):
         pixel_values, labels = batch
         logits = self(pixel_values).squeeze()
         y_prob = torch.sigmoid(logits)
-        loss = self.criterion(logits, labels.float())
+        label_smoothing = self.hparams['label_smoothing']
+
+        def _smooth_labels(_labels):
+            return _labels * (1 - label_smoothing) + 0.5 * label_smoothing
+        loss = self.criterion(logits, _smooth_labels(labels.float()))
 
         self.log(f'{metric_category}_loss', loss, on_step=True, on_epoch=False)
         self.log(f'{metric_category}_epoch_loss', loss, on_step=False, on_epoch=True)
@@ -417,8 +465,7 @@ def cli_main():
     parser = ArgumentParser()
     # program level args
     parser.add_argument('--seed', default=123, type=int)
-    parser.add_argument('--experiment_name', default='no_experiment', type=str)
-    parser.add_argument('--es_patience', default=5, type=int)
+    parser.add_argument('--es_patience', default=3, type=int)
     parser.add_argument('--es_var', choices=['val_f1', 'val_loss', 'val_partial_auroc', 'val_auroc'], default='val_partial_auroc')
     parser.add_argument('--es_mode', choices=['min', 'max'], default='max')
     parser.add_argument('--data_dir', default='./data/ods')
@@ -428,6 +475,19 @@ def cli_main():
     parser = MyDataModule.add_argparse_args(parser)
     parser = LitClassifier.add_model_specific_args(parser)
     args = parser.parse_args()
+
+    def get_experiment_name(_args):
+        d = _args.__dict__
+        s = '.'.join([f'{k}_{v}' for k, v in d.items() if k not in ('seed', 'fold')])
+        seed = d["seed"]
+        fold = d.get("fold", 0)
+        import hashlib
+        hs = hashlib.sha256(s.encode('utf-8')).hexdigest()[:16]
+        name = f'h{hs}_s{seed}_f{fold}'
+        return name
+
+    args.__dict__['experiment_name'] = get_experiment_name(args)
+    print('Experiment name: ', args.experiment_name)
 
     # always print full weights_summary
     args.weights_summary = 'full'
