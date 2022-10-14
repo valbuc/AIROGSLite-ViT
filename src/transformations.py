@@ -1,6 +1,7 @@
 import numpy as np
 from PIL import Image
-from torchvision.transforms.functional import equalize
+from torchvision.transforms.functional import equalize, center_crop
+import random
 import cv2
 import torch
 
@@ -125,3 +126,62 @@ class EqualizeTransform(object):
             return self.equalize(sample)
         else:
             return sample
+
+
+class CenterCrop(object):
+    def __init__(self, factor: float = 0.5):
+        self.factor = factor
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): square tensor image of size (C, H, W) to be cropped
+
+        Returns:
+            Tensor: cropped Tensor image.
+        """
+        side_pxl = int(round(tensor.shape[2]*self.factor, 0))
+        return center_crop(tensor, side_pxl)
+
+class Translate(object):
+    def __init__(self, prob: float = 0.5, ratio: float = 0.25):
+        self.prob = prob
+        self.ratio = ratio
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): square tensor image of size (C, H, W) to be translated
+
+        Returns:
+            Tensor: translated Tensor image.
+        """
+        translated = tensor
+        rand = random.random()
+        if rand < self.prob:
+            # vertical translation    
+            translate_vertical = random.uniform(-self.ratio, self.ratio)
+            if translate_vertical > 0:
+                down = int(round(translated.shape[1]*translate_vertical, 0))
+                add = torch.zeros(3, down, translated.shape[2])
+                translated = translated[:, :-down,:]
+                translated = torch.cat((add, translated), dim=1)
+            elif translate_vertical < 0:
+                up = -int(round(translated.shape[1]*translate_vertical, 0))
+                add = torch.zeros(3, up, translated.shape[2])
+                translated = translated[:, up:,:]
+                translated = torch.cat((translated, add), dim=1)
+
+            # horizontal translation
+            translate_horizontal = random.uniform(-self.ratio, self.ratio)
+            if translate_horizontal > 0:
+                right = int(round(translated.shape[2]*translate_horizontal, 0))
+                add = torch.zeros(3, translated.shape[1], right)
+                translated = translated[:, :, :-right]
+                translated = torch.cat((add, translated), dim=2)
+            elif translate_horizontal < 0:
+                left = -int(round(translated.shape[2]*translate_horizontal, 0))
+                add = torch.zeros(3, translated.shape[1], left)
+                translated = translated[:, :, left:]
+                translated = torch.cat((translated, add), dim=2)
+        return translated
