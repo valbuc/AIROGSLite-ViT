@@ -163,10 +163,10 @@ class MyDataModule(pl.LightningDataModule):
         train_end_idx = int(n_images * args.train_prop_end)
         val_end_idx = int(n_images * args.val_prop_end)
 
-        self.train_ds = ClassifierDataset(args.data_dir, cache_all=True,
+        self.train_ds = ClassifierDataset(args.data_dir, cache_all=False,
                                           start_idx=0, end_idx=train_end_idx,
                                           transform=self.train_transforms, cropping_factor=args.cropping_factor)
-        self.val_ds = ClassifierDataset(args.data_dir, cache_all=True,
+        self.val_ds = ClassifierDataset(args.data_dir, cache_all=False,
                                         start_idx=train_end_idx, end_idx=val_end_idx,
                                         transform=self.test_transforms, cropping_factor=args.cropping_factor)
         if args.use_validation_set_for_test:
@@ -277,8 +277,7 @@ class LitClassifier(pl.LightningModule):
             feature_extractor = ViTFeatureExtractor.from_pretrained(self.hparams['backbone'])
             self.backbone_normalize = transforms.Normalize(mean=feature_extractor.image_mean,
                                                            std=feature_extractor.image_std)
-            SIZE = 384
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'microsoft/swin-base-patch4-window12-384-in22k':
                 from transformers import AutoFeatureExtractor, SwinForImageClassification
                 self.backbone = SwinForImageClassification.from_pretrained(
@@ -291,8 +290,7 @@ class LitClassifier(pl.LightningModule):
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_normalize = transforms.Normalize(mean=feature_extractor.image_mean,
                                                                std=feature_extractor.image_std)
-                SIZE = 384
-                self.backbone_resize = transforms.Resize((SIZE, SIZE))
+                self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'microsoft/swin-large-patch4-window12-384-in22k':
                 from transformers import AutoFeatureExtractor, SwinForImageClassification
                 self.backbone = SwinForImageClassification.from_pretrained(
@@ -305,8 +303,7 @@ class LitClassifier(pl.LightningModule):
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_normalize = transforms.Normalize(mean=feature_extractor.image_mean,
                                                                std=feature_extractor.image_std)
-                SIZE = 384
-                self.backbone_resize = transforms.Resize((SIZE, SIZE))
+                self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'tv-224-vit_b_32.IMAGENET1K_V1':
             weights = models.ViT_B_32_Weights.IMAGENET1K_V1
             self.backbone = models.vit_b_32(weights=weights)
@@ -318,8 +315,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'tv-224bic-vit_b_16.IMAGENET1K_SWAG_LINEAR_V1':
             # These weights are composed of the original frozen `SWAG <https://arxiv.org/abs/2201.08371>`_ trunk
             # weights and a linear classifier learnt on top of them trained on ImageNet-1K data.
@@ -333,8 +329,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-384bic-vit_b_16.IMAGENET1K_SWAG_E2E_V1':
             # These weights are learnt via transfer learning by end-to-end fine-tuning the original
             # `SWAG <https://arxiv.org/abs/2201.08371>`_ weights on ImageNet-1K data.
@@ -347,8 +342,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 384
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-224-swin_b.IMAGENET1K_V1':
             self.backbone = models.swin_b(weights=models.Swin_B_Weights.IMAGENET1K_V1)
             self.backbone.head = nn.Sequential(
@@ -359,8 +353,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224))
         elif self.hparams['backbone'] == 'tv-224-resnext50_32x4d.IMAGENET1K_V2':
             self.backbone = models.resnext50_32x4d(weights=models.ResNeXt50_32X4D_Weights.IMAGENET1K_V2)
             # We change the output layers to make the model compatible to our data
@@ -373,8 +366,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
 
         self.save_hyperparameters()
 
@@ -557,7 +549,7 @@ def cli_main():
     )
 
     model = LitClassifier(**args.__dict__)
-    data = MyDataModule(args, model.backbone_transform, model.backbone_resize)
+    data = MyDataModule(args, model.backbone_normalize, model.backbone_resize)
 
     trainer = pl.Trainer(
         accelerator="auto",
