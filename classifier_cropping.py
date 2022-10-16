@@ -62,7 +62,7 @@ class ClassifierDataset(Dataset):
         self.len = end_idx - start_idx
         self.label_file = label_file
         if self.label_file:
-            labels = pd.read_csv(label_file, skiprows = lambda x: x not in range(start_idx, end_idx+1))
+            labels = pd.read_csv(label_file, skiprows = lambda x: x not in [0] + list(range(start_idx+1, end_idx+1)))
             labels["label"] = None
             labels["label"].loc[labels["class"] == "NRG"] = 0
             labels["label"].loc[labels["class"] == "RG"] = 1
