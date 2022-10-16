@@ -52,33 +52,66 @@ def set_seed(seed):
 
 
 class ClassifierDataset(Dataset):
-    def __init__(self, data_dir, start_idx, end_idx, cache_all=False, transform=None, cropping_factor=2):
+    def __init__(self, data_dir, img_prefix, yolo_dir, label_file, start_idx, end_idx, cache_all=False, transform=None, FACTOR: int = 1.5):
         self.data_dir = data_dir
         self.transform = transform
-        self.cropping_factor = cropping_factor
+        self.img_prefix = img_prefix
+        self.FACTOR = FACTOR
         self.cache_all = cache_all
         self.data = {}
-        labels = pd.read_csv("./data/img_info_extended.csv", index_col=0) # labels = pd.read_csv("./data/img_info_with_labels.csv", index_col=0)
-        self.img_info = labels.set_index("new_file").sort_index(ascending=True)
-        self.img_info = self.img_info.iloc[start_idx:end_idx, :]
-        self.square_filenames = self.img_info.index.to_numpy()
-        self.orig_filenames = self.img_info.orig_file.to_numpy()
-        self.labels = self.img_info.labels_int.to_numpy()
-        self.side = self.img_info.side.to_numpy()
-        self.odc_x_square = self.img_info.odc_x_square.to_numpy()
-        self.odc_y_square = self.img_info.odc_y_square.to_numpy()
-        self.odc_side_pxl = self.img_info.odc_side_pxl.to_numpy()
+        self.len = end_idx - start_idx
+        self.label_file = label_file
+        if self.label_file:
+            labels = pd.read_csv(label_file, skiprows = lambda x: x not in [0] + list(range(start_idx+1, end_idx+1)))
+            labels["label"] = None
+            labels["label"].loc[labels["class"] == "NRG"] = 0
+            labels["label"].loc[labels["class"] == "RG"] = 1
+            self.labels = labels.label.to_numpy()
+        self.yolo_dir = yolo_dir
 
         if self.cache_all:
-            for idx, fn in enumerate(self.orig_filenames):
-                filepath = os.path.join(self.data_dir, fn).replace("\\", "/") # replace possibly not necessary
-                img = cv2.imread(filepath)  #img = Image.open(filepath).convert('RGB')
-                odc_x_rect, odc_y_rect = self._get_od_center(img, self.side[idx], self.odc_x_square[idx], self.odc_y_square[idx])
-                img = crop_od_fill_if_needed(img, odc_x_rect, odc_y_rect, int(self.odc_side_pxl[idx]*2*self.cropping_factor))
+            for idx in range(start_idx, end_idx):
+                img = self._get_img(idx)
                 self.data[idx] = img
 
+    def _get_img(self, idx):
+        # get filenames
+        fn = self.img_prefix + str(idx).zfill(5) + ".jpg"
+        yolo = fn + ".txt"
+        filepath = os.path.join(self.data_dir, fn).replace("\\", "/") # replace possibly not necessary
+        yolopath = os.path.join(self.yolo_dir, yolo).replace("\\", "/")
+
+        # open files
+        img = cv2.imread(filepath)  #img = Image.open(filepath).convert('RGB')
+        with open(yolopath, "r") as f:
+            max_od = 0
+            for line in f.readlines():
+                pred = [float(number) for number in line.split()]
+                if pred[0] == 0:
+                    if pred[5] > max_od:
+                        max_od = pred[5]
+                        x_square_ratio = pred[1]
+                        y_square_ratio = pred[2]
+                        od_width_ratio = max(pred[3], pred[4])
+        
+        # if no od found take full image
+        if max_od == 0:
+            img, _, _ = ppc.make_square(img, 10)
+            return img
+
+        # convert yolo predictions
+        square_side = self._get_retina_pixel_width(img, 10)
+        odc_x_square = round(square_side * x_square_ratio, 0)
+        odc_y_square = round(square_side * y_square_ratio, 0)
+        odc_side_pxl = round(square_side * od_width_ratio, 0)
+
+        # convert square predictions to rectangle and crop
+        odc_x_rect, odc_y_rect = self._get_od_center(img, square_side, odc_x_square, odc_y_square)
+        img = crop_od_fill_if_needed(img, odc_x_rect, odc_y_rect, int(round(odc_side_pxl*2*self.FACTOR, 0)))
+        return img
+
     def __len__(self):
-        return len(self.orig_filenames)
+        return self.len
 
     def _get_od_center(self, img, side, square_x, square_y):
         add_top = (img.shape[0] - side)/2
@@ -87,16 +120,17 @@ class ClassifierDataset(Dataset):
         odc_y_rect = int(square_y + add_top)
         return odc_x_rect, odc_y_rect
 
+    def _get_retina_pixel_width(self, img, threshold):
+        hor = np.max(img, axis=(0, 2))
+        horbounds = np.where(hor > threshold)[0]
+        return horbounds[-1] - horbounds[1]
+
     def _get_data(self, idx):
         cached_val = self.data.get(idx, None)
         if cached_val is not None:
             return cached_val
         else:
-            fn = self.orig_filenames[idx]
-            filepath = os.path.join(self.data_dir, fn).replace("\\", "/") # replace possibly not necessary
-            img = cv2.imread(filepath)  #img = Image.open(filepath).convert('RGB')
-            odc_x_rect, odc_y_rect = self._get_od_center(img, self.side[idx], self.odc_x_square[idx], self.odc_y_square[idx])
-            img = crop_od_fill_if_needed(img, odc_x_rect, odc_y_rect, int(self.odc_side_pxl[idx]*2*self.cropping_factor))
+            img = self._get_img(idx)
             return img
 
     def __getitem__(self, idx):
@@ -109,8 +143,10 @@ class ClassifierDataset(Dataset):
         if self.transform:
             img = self.transform(img)
 
-        label = int(self.labels[idx])
-        return img, label
+        if self.label_file:
+            label = int(self.labels[idx])
+            return img, label
+        return img # could also return img, 0
 
 
 class MyDataModule(pl.LightningDataModule):
@@ -163,16 +199,19 @@ class MyDataModule(pl.LightningDataModule):
         train_end_idx = int(n_images * args.train_prop_end)
         val_end_idx = int(n_images * args.val_prop_end)
 
-        self.train_ds = ClassifierDataset(args.data_dir, cache_all=True,
+        self.train_ds = ClassifierDataset(args.data_dir, img_prefix=args.img_prefix, yolo_dir=args.yolo_dir,
+                                          label_file = args.label_file, cache_all=False,
                                           start_idx=0, end_idx=train_end_idx,
                                           transform=self.train_transforms, cropping_factor=args.cropping_factor)
-        self.val_ds = ClassifierDataset(args.data_dir, cache_all=True,
+        self.val_ds = ClassifierDataset(args.data_dir, img_prefix=args.img_prefix, yolo_dir=args.yolo_dir,
+                                        label_file = args.label_file, cache_all=False,
                                         start_idx=train_end_idx, end_idx=val_end_idx,
                                         transform=self.test_transforms, cropping_factor=args.cropping_factor)
         if args.use_validation_set_for_test:
             self.test_ds = self.val_ds
         else:
-            self.test_ds = ClassifierDataset(args.data_dir,
+            self.test_ds = ClassifierDataset(args.data_dir, img_prefix=args.img_prefix, yolo_dir=args.yolo_dir,
+                                             label_file = args.label_file, cache_all=False,
                                              start_idx=val_end_idx, end_idx=n_images,
                                              transform=self.test_transforms, cropping_factor=args.cropping_factor)
         self.batch_size = args.batch_size
@@ -277,8 +316,7 @@ class LitClassifier(pl.LightningModule):
             feature_extractor = ViTFeatureExtractor.from_pretrained(self.hparams['backbone'])
             self.backbone_normalize = transforms.Normalize(mean=feature_extractor.image_mean,
                                                            std=feature_extractor.image_std)
-            SIZE = 384
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'microsoft/swin-base-patch4-window12-384-in22k':
                 from transformers import AutoFeatureExtractor, SwinForImageClassification
                 self.backbone = SwinForImageClassification.from_pretrained(
@@ -291,8 +329,7 @@ class LitClassifier(pl.LightningModule):
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_normalize = transforms.Normalize(mean=feature_extractor.image_mean,
                                                                std=feature_extractor.image_std)
-                SIZE = 384
-                self.backbone_resize = transforms.Resize((SIZE, SIZE))
+                self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'microsoft/swin-large-patch4-window12-384-in22k':
                 from transformers import AutoFeatureExtractor, SwinForImageClassification
                 self.backbone = SwinForImageClassification.from_pretrained(
@@ -305,8 +342,7 @@ class LitClassifier(pl.LightningModule):
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_normalize = transforms.Normalize(mean=feature_extractor.image_mean,
                                                                std=feature_extractor.image_std)
-                SIZE = 384
-                self.backbone_resize = transforms.Resize((SIZE, SIZE))
+                self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'tv-224-vit_b_32.IMAGENET1K_V1':
             weights = models.ViT_B_32_Weights.IMAGENET1K_V1
             self.backbone = models.vit_b_32(weights=weights)
@@ -318,8 +354,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'tv-224bic-vit_b_16.IMAGENET1K_SWAG_LINEAR_V1':
             # These weights are composed of the original frozen `SWAG <https://arxiv.org/abs/2201.08371>`_ trunk
             # weights and a linear classifier learnt on top of them trained on ImageNet-1K data.
@@ -333,8 +368,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-384bic-vit_b_16.IMAGENET1K_SWAG_E2E_V1':
             # These weights are learnt via transfer learning by end-to-end fine-tuning the original
             # `SWAG <https://arxiv.org/abs/2201.08371>`_ weights on ImageNet-1K data.
@@ -347,8 +381,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 384
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-224-swin_b.IMAGENET1K_V1':
             self.backbone = models.swin_b(weights=models.Swin_B_Weights.IMAGENET1K_V1)
             self.backbone.head = nn.Sequential(
@@ -359,8 +392,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224))
         elif self.hparams['backbone'] == 'tv-224-resnext50_32x4d.IMAGENET1K_V2':
             self.backbone = models.resnext50_32x4d(weights=models.ResNeXt50_32X4D_Weights.IMAGENET1K_V2)
             # We change the output layers to make the model compatible to our data
@@ -373,8 +405,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            SIZE = 224
-            self.backbone_resize = transforms.Resize((SIZE, SIZE))
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
 
         self.save_hyperparameters()
 
@@ -512,6 +543,9 @@ def cli_main():
     parser.add_argument('--es_var', choices=['val_f1', 'val_loss', 'val_partial_auroc', 'val_auroc'], default='val_partial_auroc')
     parser.add_argument('--es_mode', choices=['min', 'max'], default='max')
     parser.add_argument('--data_dir', default='./data/ods')
+    parser.add_argument('--img_prefix', default='DEV')
+    parser.add_argument('--yolo_dir', default='./data/labels_train_finalModel')
+    parser.add_argument('--label_file', default=None)
     parser.add_argument('--use_lr_scheduler', action='store_true')
     parser.add_argument('--lr_training_epochs', default=20, type=int)
     parser.add_argument('--lr_warmup_epochs', default=1, type=int)
@@ -557,7 +591,7 @@ def cli_main():
     )
 
     model = LitClassifier(**args.__dict__)
-    data = MyDataModule(args, model.backbone_transform, model.backbone_resize)
+    data = MyDataModule(args, model.backbone_normalize, model.backbone_resize)
 
     trainer = pl.Trainer(
         accelerator="auto",
