@@ -46,46 +46,55 @@ def _get_class_labels_df(cls_labels_file):  # e.g. 'data/dev_labels.csv'
     return cls_labels
 
 
-def _process_idx(idx, obj):
-    return idx, obj._get_data(idx)
-
-
 class ClassifierDataset(Dataset):
-    def __init__(self, name, data_dir, df_labels, cache_all=False, transform=None):
+    def __init__(self, data_dir, filenames, labels, cache_all=False, transform=None):
         self.data_dir = data_dir
         self.transform = transform
         self.cache_all = cache_all
         self.data = {}
-        self.df_labels = df_labels.reset_index().sort_values(by='filename', ascending=True)
-        self.filenames = self.df_labels.filename.to_numpy()
-        if self.cache_all:
-            print(f"Caching {name} dataset...")
-            from joblib import Parallel, delayed
-            results = Parallel(n_jobs=8)(delayed(_process_idx)(i, self) for i in tqdm(range(len(self.filenames))))
-            for i, data in results:
-                self.data[i] = data
+        self.filenames = filenames
+        self.labels = labels
 
     def __len__(self):
         return len(self.filenames)
 
     def _get_data(self, idx):
-        cached_val = self.data.get(idx, None)
-        if cached_val is not None:
-            return cached_val
-        else:
-            fn = self.filenames[idx]
-            filepath = os.path.join(self.data_dir, fn)
-            img = Image.open(filepath).convert('RGB')
-            if self.transform:
-                img = self.transform(img)
-            return img
+        if self.cache_all:
+            cached_val = self.data.get(idx, None)
+            if cached_val is not None:
+                return cached_val
+        fn = self.filenames[idx]
+        filepath = os.path.join(self.data_dir, fn)
+        img = Image.open(filepath).convert('RGB')
+        if self.transform:
+            img = self.transform(img)
+        if self.cache_all:
+            self.data[idx] = img
+        return img
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
         img = self._get_data(idx)
-        label = self.df_labels.iloc[idx].label_num
-        return img, label
+        label = None
+        if self.labels is not None:
+            label = self.labels[idx]
+        return img, label, self.filenames[idx]
+
+
+def _get_train_val_test_split_masks(data_cnt, test_prop, fold_cnt, fold_idx):
+    assert fold_idx < fold_cnt
+    devset_len = int(data_cnt * (1 - test_prop))
+    test_mask = np.zeros(data_cnt, dtype=bool)
+    test_mask[devset_len:-1] = True
+
+    fold_val = np.zeros_like(test_mask)
+    val_cnt = devset_len // fold_cnt
+    fold_val[fold_idx * val_cnt:(fold_idx + 1) * val_cnt] = True
+
+    fold_train = (~fold_val) & (~test_mask)
+
+    return fold_train, fold_val, test_mask
 
 
 class MyDataModule(pl.LightningDataModule):
@@ -157,43 +166,41 @@ class MyDataModule(pl.LightningDataModule):
         rng = np.random.default_rng(seed=123)
         shuffled_order = rng.permuted(np.arange(len(df_labels), dtype=int))
         df_labels = df_labels.iloc[shuffled_order]
+        train_mask, val_mask, test_mask = _get_train_val_test_split_masks(
+            len(df_labels), args.split_test_prop, args.split_num_val_folds, args.split_val_fold_idx)
 
-        devset_len = int(len(df_labels) * (1-args.split_test_prop))
-        test_mask = np.zeros(len(df_labels), dtype=bool)
-        test_mask[devset_len:-1] = True
-
-        fold_val = np.zeros(len(df_labels), dtype=bool)
-        val_cnt = devset_len // args.split_num_val_folds
-        if args.split_val_fold_idx < args.split_num_val_folds:
-            fold_val[args.split_val_fold_idx * val_cnt:(args.split_val_fold_idx+1) * val_cnt] = True
-        else:
-            fold_val[args.split_val_fold_idx * val_cnt:devset_len] = True
-        fold_train = (~fold_val) & (~test_mask)
-
-        self.train_ds = ClassifierDataset("train", args.data_dir, df_labels=df_labels[fold_train],
-                                          cache_all=False, transform=self.train_transforms)
-        self.val_ds = ClassifierDataset("validation", args.data_dir, df_labels=df_labels[fold_val],
-                                        cache_all=True, transform=self.test_transforms)
+        self.train_ds = ClassifierDataset(args.data_dir, cache_all=False, transform=self.train_transforms,
+                                          filenames=df_labels[train_mask].filename.to_numpy(),
+                                          labels=df_labels[train_mask].label_num.to_numpy())
+        self.val_ds = ClassifierDataset(args.data_dir, cache_all=True, transform=self.test_transforms,
+                                        filenames=df_labels[val_mask].filename.to_numpy(),
+                                        labels=df_labels[val_mask].label_num.to_numpy())
         if args.split_test_prop == 0:
             self.test_ds = self.val_ds
         else:
-            self.test_ds = ClassifierDataset("test", args.data_dir, df_labels=df_labels[test_mask],
-                                             cache_all=False, transform=self.test_transforms)
+            self.test_ds = ClassifierDataset(args.data_dir, cache_all=False, transform=self.test_transforms,
+                                             filenames=df_labels[test_mask].filename.to_numpy(),
+                                             labels=df_labels[test_mask].label_num.to_numpy())
         self.batch_size = args.batch_size
         self.args = args
 
+        self.train_data_loader = DataLoader(
+            self.train_ds, shuffle=True, batch_size=self.batch_size,
+            num_workers=8, persistent_workers=True, pin_memory=True,
+            drop_last=True)
+        self.val_data_loader = DataLoader(
+            self.val_ds, shuffle=False, batch_size=self.batch_size,
+            num_workers=1, persistent_workers=True, pin_memory=True)
+        self.test_data_loader = DataLoader(self.test_ds, shuffle=False, batch_size=self.batch_size, num_workers=8)
+
     def train_dataloader(self):
-        return DataLoader(self.train_ds, shuffle=True, batch_size=self.batch_size,
-                          num_workers=8, pin_memory=True, drop_last=True)
+        return self.train_data_loader
 
     def val_dataloader(self):
-        return DataLoader(self.val_ds, batch_size=self.batch_size,
-                          num_workers=8, pin_memory=True)
+        return self.val_data_loader
 
     def test_dataloader(self):
-        if self.args.split_test_prop == 0:
-            return self.val_dataloader()
-        return DataLoader(self.val_ds, batch_size=self.batch_size, num_workers=8)
+        return self.test_data_loader
 
 
 class SensAtSpec(torchmetrics.Metric):
@@ -418,7 +425,7 @@ class LitClassifier(pl.LightningModule):
             return outputs.logits
 
     def common_step(self, batch, metric_category):
-        pixel_values, labels = batch
+        pixel_values, labels, _ = batch
         logits = self(pixel_values).squeeze(dim=1)
         y_prob = torch.sigmoid(logits)
         label_smoothing = self.hparams['label_smoothing']
@@ -434,21 +441,33 @@ class LitClassifier(pl.LightningModule):
             metric_value = metric(y_prob, labels)
             self.log(f"{metric_category}_{name}", metric_value, on_step=False, on_epoch=True)
 
-        return loss
+        return loss, y_prob, labels
 
     def training_step(self, batch, batch_idx):
         if self.lr_schedulers():
             self.lr_schedulers().step()
-        loss = self.common_step(batch, 'train')
+        loss, _, _ = self.common_step(batch, 'train')
         return loss
     
     def validation_step(self, batch, batch_idx):
-        loss = self.common_step(batch, 'val')
-        return loss
+        loss, _, _ = self.common_step(batch, 'val')
+        # return loss
 
     def test_step(self, batch, batch_idx):
-        loss = self.common_step(batch, 'test')
-        return loss
+        _, preds, labels = self.common_step(batch, 'test')
+        _, _, filenames = batch
+        return preds.cpu().numpy(), labels.cpu().numpy(), filenames
+
+    def test_epoch_end(self, outputs):
+        dfs = []
+        for preds, labels, filenames in outputs:
+            #filenames = self.test_df.iloc[idxs].filename
+            df = pd.DataFrame(data={'filename': filenames, 'predictions': preds, 'labels': labels})
+            dfs.append(df)
+        df_test_res = pd.concat(dfs)
+        test_res_file = f'./experiment_logs/{self.hparams.experiment_name}/predictions_{self.hparams.experiment_name}.csv'
+        df_test_res.to_csv(test_res_file)
+        print(f'Written test predictions to {test_res_file}')
 
     def on_train_start(self):
         # Ensuring that the test metrics are logged also in the hyperparameters tab
@@ -514,6 +533,7 @@ def cli_main():
     parser.add_argument('--use_lr_scheduler', action='store_true')
     parser.add_argument('--lr_training_epochs', default=20, type=int)
     parser.add_argument('--lr_warmup_epochs', default=1, type=int)
+    parser.add_argument('--predict_checkpoint', default=None, type=str)
     parser = MyDataModule.add_argparse_args(parser)
     parser = LitClassifier.add_model_specific_args(parser)
     args = parser.parse_args()
@@ -539,45 +559,52 @@ def cli_main():
 
     set_seed(args.seed)
 
-    tb_logger = pl.loggers.TensorBoardLogger(
-        save_dir="experiment_logs", name=args.experiment_name, default_hp_metric=False
-    )
+    if args.predict_checkpoint:
+        model = LitClassifier.load_from_checkpoint(args.predict_checkpoint)
+        model.eval()
+    else:
+        tb_logger = pl.loggers.TensorBoardLogger(
+            save_dir="experiment_logs", name=args.experiment_name, default_hp_metric=False
+        )
 
-    early_stop_callback = pl.callbacks.EarlyStopping(
-        monitor=args.es_var,
-        patience=args.es_patience,
-        strict=False,
-        verbose=True,
-        mode=args.es_mode,
-    )
+        early_stop_callback = pl.callbacks.EarlyStopping(
+            monitor=args.es_var,
+            patience=args.es_patience,
+            strict=False,
+            verbose=True,
+            mode=args.es_mode,
+        )
 
-    checkpointing_callback = pl.callbacks.ModelCheckpoint(
-        monitor=args.es_var, save_top_k=1, mode=args.es_mode
-    )
+        checkpointing_callback = pl.callbacks.ModelCheckpoint(
+            monitor=args.es_var, save_top_k=1, mode=args.es_mode
+        )
 
-    model = LitClassifier(**args.__dict__)
-    data = MyDataModule(args, model.backbone_transform, model.backbone_resize)
+        model = LitClassifier(**args.__dict__)
+        data = MyDataModule(args, model.backbone_transform, model.backbone_resize)
 
-    set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected
+        set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected
 
-    trainer = pl.Trainer(
-        accelerator="auto",
-        logger=tb_logger,
-        callbacks=[early_stop_callback, checkpointing_callback],
-        max_epochs=1000,
-        auto_lr_find=False,
-        deterministic=True,
-        num_sanity_val_steps=0
-    )
-    # trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+        trainer = pl.Trainer(
+            accelerator="auto",
+            logger=tb_logger,
+            callbacks=[early_stop_callback, checkpointing_callback],
+            max_epochs=1000,
+            auto_lr_find=False,
+            deterministic=True,
+            num_sanity_val_steps=0,
+            val_check_interval=0.5  # the model converges quickly, so the validation should be done more frequently for better model selection
+        )
+        # trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-    trainer.fit(model, data)
+        trainer.fit(model, data)
 
-    # load the best model for testing
-    model.load_from_checkpoint(checkpointing_callback.best_model_path)
-    model.eval()
+        set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected before testing
 
-    trainer.test(model=model, datamodule=data)
+        # load the best model for testing
+        model.load_from_checkpoint(checkpointing_callback.best_model_path)
+        model.eval()
+
+        trainer.test(model=model, datamodule=data)
 
 
 if __name__ == "__main__":
