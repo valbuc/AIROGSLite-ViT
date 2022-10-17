@@ -130,7 +130,7 @@ class MyDataModule(pl.LightningDataModule):
                 transforms.RandomAffine(degrees=args.aug_rot_degrees,
                                         translate=(aug_translate/2, aug_translate/2),
                                         scale=None)],  # random scaling is done through the cropping
-                p=0.9),
+                p=0.66),
             CenterCrop(crop_factor, args.aug_scale/2),
             backbone_resize,
             transforms.RandomHorizontalFlip(),
@@ -152,6 +152,11 @@ class MyDataModule(pl.LightningDataModule):
         fn_df = fn_df.set_index('id')
         df_labels = pd.merge(fn_df, df_labels, how='left', left_index=True, right_index=True)  # note the left join
         df_labels = df_labels.sort_index(ascending=True)
+
+        # always shuffle before, to be sure that the data is not biased in any way
+        rng = np.random.default_rng(seed=123)
+        shuffled_order = rng.permuted(np.arange(len(df_labels), dtype=int))
+        df_labels = df_labels.iloc[shuffled_order]
 
         devset_len = int(len(df_labels) * (1-args.split_test_prop))
         test_mask = np.zeros(len(df_labels), dtype=bool)
@@ -179,7 +184,7 @@ class MyDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_ds, shuffle=True, batch_size=self.batch_size,
-                          num_workers=8, pin_memory=True)
+                          num_workers=8, pin_memory=True, drop_last=True)
 
     def val_dataloader(self):
         return DataLoader(self.val_ds, batch_size=self.batch_size,
@@ -256,8 +261,8 @@ class LitClassifier(pl.LightningModule):
                                 'microsoft/swin-base-patch4-window12-384-in22k',
                                 'microsoft/swin-large-patch4-window12-384-in22k',
                                 'tv-224-vit_b_32.IMAGENET1K_V1',
-                                'tv-224bic-vit_b_16.IMAGENET1K_SWAG_LINEAR_V1',
-                                'tv-384bic-vit_b_16.IMAGENET1K_SWAG_E2E_V1',
+                                'tv-224vit_b_16.IMAGENET1K_SWAG_LINEAR_V1',
+                                'tv-384vit_b_16.IMAGENET1K_SWAG_E2E_V1',
                                 'tv-224-swin_b.IMAGENET1K_V1',
                                 'tv-224-resnext50_32x4d.IMAGENET1K_V2'
                             ], default='hf-vit-384')
@@ -319,7 +324,7 @@ class LitClassifier(pl.LightningModule):
                 std=(0.229, 0.224, 0.225),
             )
             self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
-        elif self.hparams['backbone'] == 'tv-224bic-vit_b_16.IMAGENET1K_SWAG_LINEAR_V1':
+        elif self.hparams['backbone'] == 'tv-224vit_b_16.IMAGENET1K_SWAG_LINEAR_V1':
             # These weights are composed of the original frozen `SWAG <https://arxiv.org/abs/2201.08371>`_ trunk
             # weights and a linear classifier learnt on top of them trained on ImageNet-1K data.
             weights = models.ViT_B_16_Weights.IMAGENET1K_SWAG_LINEAR_V1
@@ -333,7 +338,7 @@ class LitClassifier(pl.LightningModule):
                 std=(0.229, 0.224, 0.225),
             )
             self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
-        elif self.hparams['backbone'] == 'tv-384bic-vit_b_16.IMAGENET1K_SWAG_E2E_V1':
+        elif self.hparams['backbone'] == 'tv-384vit_b_16.IMAGENET1K_SWAG_E2E_V1':
             # These weights are learnt via transfer learning by end-to-end fine-tuning the original
             # `SWAG <https://arxiv.org/abs/2201.08371>`_ weights on ImageNet-1K data.
             self.backbone = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_SWAG_E2E_V1)
@@ -356,7 +361,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-224-resnext50_32x4d.IMAGENET1K_V2':
             self.backbone = models.resnext50_32x4d(weights=models.ResNeXt50_32X4D_Weights.IMAGENET1K_V2)
             # We change the output layers to make the model compatible to our data
@@ -414,13 +419,13 @@ class LitClassifier(pl.LightningModule):
 
     def common_step(self, batch, metric_category):
         pixel_values, labels = batch
-        logits = self(pixel_values).squeeze()
+        logits = self(pixel_values).squeeze(dim=1)
         y_prob = torch.sigmoid(logits)
         label_smoothing = self.hparams['label_smoothing']
 
         def _smooth_labels(_labels):
             return _labels * (1 - label_smoothing) + 0.5 * label_smoothing
-        loss = self.criterion(logits, _smooth_labels(labels.float()))
+        loss = self.criterion(logits, _smooth_labels(labels))
 
         self.log(f'{metric_category}_loss', loss, on_step=True, on_epoch=False)
         self.log(f'{metric_category}_epoch_loss', loss, on_step=False, on_epoch=True)
