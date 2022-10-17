@@ -15,7 +15,7 @@ from torchvision import transforms, models
 from torch.utils.data import DataLoader, Dataset
 import pytorch_lightning as pl
 from transformers import get_cosine_schedule_with_warmup
-from src.transformations import EqualizeTransform
+from src.transformations import EqualizeTransform, CenterCrop
 
 
 # id2label = {0: "NRG", 1:"RG"}
@@ -23,18 +23,6 @@ from src.transformations import EqualizeTransform
 # this is binary classification so we only need 1 class (the positive class)
 id2label = {1: "RG"}
 label2id = {"RG": 1}
-
-# _train_transforms = Compose(
-#         [
-#             #Resize(feature_extractor.size),
-#             RandomHorizontalFlip(),
-#             #RandomVerticalFlip(),
-#             RandomRotation(10),
-#             #GaussianBlur(5, (0.1, 0.2)),
-#             #ToTensor(),
-#             normalize,
-#         ]
-#     )
 
 
 def set_seed(seed):
@@ -49,24 +37,33 @@ def set_seed(seed):
     pl.utilities.seed.seed_everything(seed)
 
 
+def _get_class_labels_df(cls_labels_file):  # e.g. 'data/dev_labels.csv'
+    cls_labels = pd.read_csv(cls_labels_file)
+    cls_labels['id'] = cls_labels['aimi_id']
+    cls_labels['label_num'] = (cls_labels['class'] == 'RG').astype(int)
+    cls_labels = cls_labels.drop(columns=['aimi_id', 'class'])
+    cls_labels = cls_labels.set_index('id')
+    return cls_labels
+
+
+def _process_idx(idx, obj):
+    return idx, obj._get_data(idx)
+
+
 class ClassifierDataset(Dataset):
-    def __init__(self, data_dir, start_idx, end_idx, cache_all=False, transform=None):
+    def __init__(self, name, data_dir, df_labels, cache_all=False, transform=None):
         self.data_dir = data_dir
         self.transform = transform
         self.cache_all = cache_all
         self.data = {}
-        labels = pd.read_csv("./data/img_info_with_labels.csv", index_col=0)
-        self.df_labels = labels.set_index("new_file").sort_index(ascending=True)
-        self.df_labels = self.df_labels.iloc[start_idx:end_idx, :]
-        self.filenames = self.df_labels.index.to_numpy()
-
+        self.df_labels = df_labels.reset_index().sort_values(by='filename', ascending=True)
+        self.filenames = self.df_labels.filename.to_numpy()
         if self.cache_all:
-            for i, fn in enumerate(self.filenames):
-                filepath = os.path.join(self.data_dir, fn)
-                img = Image.open(filepath).convert('RGB')  # convert forces the image to load in the main process
-                # ...other, since PIL uses lazy loading, would cause the image to be loaded in the dataloader
-                # worker process but PIL has issues with multiprocessing
-                self.data[i] = img
+            print(f"Caching {name} dataset...")
+            from joblib import Parallel, delayed
+            results = Parallel(n_jobs=8)(delayed(_process_idx)(i, self) for i in tqdm(range(len(self.filenames))))
+            for i, data in results:
+                self.data[i] = data
 
     def __len__(self):
         return len(self.filenames)
@@ -79,19 +76,15 @@ class ClassifierDataset(Dataset):
             fn = self.filenames[idx]
             filepath = os.path.join(self.data_dir, fn)
             img = Image.open(filepath).convert('RGB')
+            if self.transform:
+                img = self.transform(img)
             return img
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
-
         img = self._get_data(idx)
-
-        # apply transforms
-        if self.transform:
-            img = self.transform(img)
-
-        label = int(self.df_labels.loc[self.filenames[idx]].labels_int)
+        label = self.df_labels.iloc[idx].label_num
         return img, label
 
 
@@ -101,66 +94,101 @@ class MyDataModule(pl.LightningDataModule):
         parser = parent_parser.add_argument_group(
             title="MyDataModule", description="Class to organize and manage the data"
         )
+        parser.add_argument('--data_dir', type=str)  #, e.g. './data/cfp_od_crop_OD_f2.0'
+        parser.add_argument('--cls_label_file', default='./data/dev_labels.csv')
         parser.add_argument("--equalize", choices=["no", "yes", "IgnoreBlack"], default="no")
-        parser.add_argument("--batch_size", default=128, type=int)
-        parser.add_argument("--use_validation_set_for_test", action="store_true")
-        parser.add_argument("--train_prop_end", default=0.6, type=float)
-        parser.add_argument("--val_prop_end", default=0.8, type=float)
+        parser.add_argument("--batch_size", default=16, type=int)
+        parser.add_argument("--od_crop_factor", default=1.5, type=float)
+        parser.add_argument("--aug_rot_degrees", default=0, type=float)
+        parser.add_argument("--aug_translate", default=0.0, type=float)
+        parser.add_argument("--aug_scale", default=0.0, type=float)
+        parser.add_argument("--split_num_val_folds", default=5, type=int)
+        parser.add_argument("--split_val_fold_idx", default=4, type=int)
+        parser.add_argument("--split_test_prop", default=0.0, type=float)
+        parser.add_argument("--DATA_MAX_OD_DIAMETER_PROP",
+                            default=2.0,
+                            help="needs to match data generated with lossless_od_crops_using_yolo_predictions.ipynb")
+        parser.add_argument("--DATA_CROP_ENLARGMENT_FACTOR",
+                            default=2**0.5 * 1.01,  # so that a rotation of the area of interest will not show an artificial border
+                            help="needs to match data generated with  lossless_od_crops_using_yolo_predictions.ipynb")
         return parent_parser
 
-    def __init__(self, args, backbone_transform):
+    def __init__(self, args, backbone_transform, backbone_resize):
         super().__init__()
+
+        max_od_diameter_prop = args.DATA_MAX_OD_DIAMETER_PROP
+        crop_enlargment_factor = args.DATA_CROP_ENLARGMENT_FACTOR
+        crop_factor = args.od_crop_factor / (max_od_diameter_prop * crop_enlargment_factor)
+        aug_translate = args.aug_translate / (max_od_diameter_prop * crop_enlargment_factor)
+
+        df_labels = _get_class_labels_df(args.cls_label_file).sort_index(ascending=True)
 
         equalizer = EqualizeTransform(args)
         self.train_transforms = transforms.Compose([
             equalizer,
+            transforms.RandomApply([
+                transforms.RandomAffine(degrees=args.aug_rot_degrees,
+                                        translate=(aug_translate/2, aug_translate/2),
+                                        scale=None)],  # random scaling is done through the cropping
+                p=0.9),
+            CenterCrop(crop_factor, args.aug_scale/2),
+            backbone_resize,
+            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             backbone_transform,
-            transforms.RandomHorizontalFlip(),
-            # transforms.RandomApply([
-            #     transforms.RandomAffine(degrees=10, translate=None,
-            #                             scale=(1.0, 1.2))],
-            # p=0.5)
         ])
 
         self.test_transforms = transforms.Compose([
             equalizer,
+            CenterCrop(crop_factor),
+            backbone_resize,
             transforms.ToTensor(),
             backbone_transform,
         ])
 
-        self.labels = pd.read_csv("./data/img_info_with_labels.csv", index_col=0)
-        n_images = self.labels.shape[0]
-        #n_images = 300
+        datadir_filenames = [fn for fn in os.listdir(args.data_dir) if fn.endswith('.png')]
+        fn_df = pd.DataFrame(columns=['filename'], data=datadir_filenames)
+        fn_df['id'] = fn_df['filename'].map(lambda x: x[:-4])
+        fn_df = fn_df.set_index('id')
+        df_labels = pd.merge(fn_df, df_labels, how='left', left_index=True, right_index=True)  # note the left join
+        df_labels = df_labels.sort_index(ascending=True)
 
-        train_end_idx = int(n_images * args.train_prop_end)
-        val_end_idx = int(n_images * args.val_prop_end)
+        devset_len = int(len(df_labels) * (1-args.split_test_prop))
+        test_mask = np.zeros(len(df_labels), dtype=bool)
+        test_mask[devset_len:-1] = True
 
-        self.train_ds = ClassifierDataset(args.data_dir, cache_all=True,
-                                          start_idx=0, end_idx=train_end_idx,
-                                          transform=self.train_transforms)
-        self.val_ds = ClassifierDataset(args.data_dir, cache_all=True,
-                                        start_idx=train_end_idx, end_idx=val_end_idx,
-                                        transform=self.test_transforms)
-        if args.use_validation_set_for_test:
+        fold_val = np.zeros(len(df_labels), dtype=bool)
+        val_cnt = devset_len // args.split_num_val_folds
+        if args.split_val_fold_idx < args.split_num_val_folds:
+            fold_val[args.split_val_fold_idx * val_cnt:(args.split_val_fold_idx+1) * val_cnt] = True
+        else:
+            fold_val[args.split_val_fold_idx * val_cnt:devset_len] = True
+        fold_train = (~fold_val) & (~test_mask)
+
+        self.train_ds = ClassifierDataset("train", args.data_dir, df_labels=df_labels[fold_train],
+                                          cache_all=False, transform=self.train_transforms)
+        self.val_ds = ClassifierDataset("validation", args.data_dir, df_labels=df_labels[fold_val],
+                                        cache_all=True, transform=self.test_transforms)
+        if args.split_test_prop == 0:
             self.test_ds = self.val_ds
         else:
-            self.test_ds = ClassifierDataset(args.data_dir,
-                                             start_idx=val_end_idx, end_idx=n_images,
-                                             transform=self.test_transforms)
+            self.test_ds = ClassifierDataset("test", args.data_dir, df_labels=df_labels[test_mask],
+                                             cache_all=False, transform=self.test_transforms)
         self.batch_size = args.batch_size
+        self.args = args
 
     def train_dataloader(self):
         return DataLoader(self.train_ds, shuffle=True, batch_size=self.batch_size,
-                          num_workers=6, persistent_workers=True)
+                          num_workers=8, pin_memory=True)
 
     def val_dataloader(self):
         return DataLoader(self.val_ds, batch_size=self.batch_size,
-                          num_workers=6, persistent_workers=True)
+                          num_workers=8, pin_memory=True)
 
     def test_dataloader(self):
-        return DataLoader(self.test_ds, batch_size=self.batch_size,
-                          num_workers=6, persistent_workers=True)
+        if self.args.split_test_prop == 0:
+            return self.val_dataloader()
+        return DataLoader(self.val_ds, batch_size=self.batch_size, num_workers=8)
 
 
 class SensAtSpec(torchmetrics.Metric):
@@ -250,6 +278,7 @@ class LitClassifier(pl.LightningModule):
             feature_extractor = ViTFeatureExtractor.from_pretrained(self.hparams['backbone'])
             self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
                                                            std=feature_extractor.image_std)
+            self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'microsoft/swin-base-patch4-window12-384-in22k':
                 from transformers import AutoFeatureExtractor, SwinForImageClassification
                 self.backbone = SwinForImageClassification.from_pretrained(
@@ -262,6 +291,8 @@ class LitClassifier(pl.LightningModule):
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
                                                                std=feature_extractor.image_std)
+                self.backbone_resize = transforms.Resize((384, 384),
+                                                         interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'microsoft/swin-large-patch4-window12-384-in22k':
                 from transformers import AutoFeatureExtractor, SwinForImageClassification
                 self.backbone = SwinForImageClassification.from_pretrained(
@@ -274,6 +305,8 @@ class LitClassifier(pl.LightningModule):
                 feature_extractor = AutoFeatureExtractor.from_pretrained(self.hparams['backbone'])
                 self.backbone_transform = transforms.Normalize(mean=feature_extractor.image_mean,
                                                                std=feature_extractor.image_std)
+                self.backbone_resize = transforms.Resize((384, 384),
+                                                         interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'tv-224-vit_b_32.IMAGENET1K_V1':
             weights = models.ViT_B_32_Weights.IMAGENET1K_V1
             self.backbone = models.vit_b_32(weights=weights)
@@ -285,6 +318,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'tv-224bic-vit_b_16.IMAGENET1K_SWAG_LINEAR_V1':
             # These weights are composed of the original frozen `SWAG <https://arxiv.org/abs/2201.08371>`_ trunk
             # weights and a linear classifier learnt on top of them trained on ImageNet-1K data.
@@ -298,6 +332,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-384bic-vit_b_16.IMAGENET1K_SWAG_E2E_V1':
             # These weights are learnt via transfer learning by end-to-end fine-tuning the original
             # `SWAG <https://arxiv.org/abs/2201.08371>`_ weights on ImageNet-1K data.
@@ -310,6 +345,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-224-swin_b.IMAGENET1K_V1':
             self.backbone = models.swin_b(weights=models.Swin_B_Weights.IMAGENET1K_V1)
             self.backbone.head = nn.Sequential(
@@ -320,6 +356,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
         elif self.hparams['backbone'] == 'tv-224-resnext50_32x4d.IMAGENET1K_V2':
             self.backbone = models.resnext50_32x4d(weights=models.ResNeXt50_32X4D_Weights.IMAGENET1K_V2)
             # We change the output layers to make the model compatible to our data
@@ -332,6 +369,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
+            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR)
 
         self.save_hyperparameters()
 
@@ -468,7 +506,6 @@ def cli_main():
     parser.add_argument('--es_patience', default=3, type=int)
     parser.add_argument('--es_var', choices=['val_f1', 'val_loss', 'val_partial_auroc', 'val_auroc'], default='val_partial_auroc')
     parser.add_argument('--es_mode', choices=['min', 'max'], default='max')
-    parser.add_argument('--data_dir', default='./data/ods')
     parser.add_argument('--use_lr_scheduler', action='store_true')
     parser.add_argument('--lr_training_epochs', default=20, type=int)
     parser.add_argument('--lr_warmup_epochs', default=1, type=int)
@@ -478,9 +515,9 @@ def cli_main():
 
     def get_experiment_name(_args):
         d = _args.__dict__
-        s = '.'.join([f'{k}_{v}' for k, v in d.items() if k not in ('seed', 'fold')])
+        s = '.'.join([f'{k}_{v}' for k, v in d.items() if k not in ('seed', 'split_val_fold_idx')])
         seed = d["seed"]
-        fold = d.get("fold", 0)
+        fold = d.get("split_val_fold_idx", 0)
         import hashlib
         hs = hashlib.sha256(s.encode('utf-8')).hexdigest()[:16]
         name = f'h{hs}_s{seed}_f{fold}'
@@ -514,7 +551,9 @@ def cli_main():
     )
 
     model = LitClassifier(**args.__dict__)
-    data = MyDataModule(args, model.backbone_transform)
+    data = MyDataModule(args, model.backbone_transform, model.backbone_resize)
+
+    set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected
 
     trainer = pl.Trainer(
         accelerator="auto",
@@ -523,6 +562,7 @@ def cli_main():
         max_epochs=1000,
         auto_lr_find=False,
         deterministic=True,
+        num_sanity_val_steps=0
     )
     # trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 

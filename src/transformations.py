@@ -1,6 +1,6 @@
 import numpy as np
 from PIL import Image
-from torchvision.transforms.functional import equalize, center_crop
+from torchvision.transforms.functional import equalize, center_crop, get_dimensions
 import random
 import cv2
 import torch
@@ -129,19 +129,18 @@ class EqualizeTransform(object):
 
 
 class CenterCrop(object):
-    def __init__(self, factor: float = 0.5):
+    def __init__(self, factor: float = 0.5, jitter: float = 0.0):
         self.factor = factor
+        self.jitter = jitter
 
-    def __call__(self, tensor):
-        """
-        Args:
-            tensor (Tensor): square tensor image of size (C, H, W) to be cropped
+    def __call__(self, img):
+        factor = self.factor
+        if self.jitter > 0:
+            factor += random.uniform(-self.jitter, self.jitter)
+        _, _, side_pxl = get_dimensions(img)
+        side_pxl = int(round(side_pxl * factor, 0))
+        return center_crop(img, side_pxl)
 
-        Returns:
-            Tensor: cropped Tensor image.
-        """
-        side_pxl = int(round(tensor.shape[2]*self.factor, 0))
-        return center_crop(tensor, side_pxl)
 
 class Translate(object):
     def __init__(self, prob: float = 0.5, ratio: float = 0.25):
