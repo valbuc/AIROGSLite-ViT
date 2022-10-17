@@ -488,11 +488,10 @@ class LitClassifier(pl.LightningModule):
     def test_epoch_end(self, outputs):
         dfs = []
         for preds, labels, filenames in outputs:
-            #filenames = self.test_df.iloc[idxs].filename
             df = pd.DataFrame(data={'filename': filenames, 'predictions': preds, 'labels': labels})
             dfs.append(df)
-        df_test_res = pd.concat(dfs)
-        test_res_file = f'./experiment_logs/{self.hparams.experiment_name}/predictions_{self.hparams.experiment_name}.csv'
+        df_test_res = pd.concat(dfs).sort_values(by='filename', ascending=True)
+        test_res_file = f'./experiment_logs/predictions_{self.hparams.experiment_name}.csv'
         df_test_res.to_csv(test_res_file)
         print(f'Written test predictions to {test_res_file}')
 
