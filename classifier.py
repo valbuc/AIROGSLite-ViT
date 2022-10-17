@@ -1,5 +1,5 @@
 import time
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import os
 from sys import float_info
 from typing import Any, Optional
@@ -102,18 +102,33 @@ class MyDataModule(pl.LightningDataModule):
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group(
             title="MyDataModule", description="Class to organize and manage the data"
+            
         )
-        parser.add_argument('--data_dir', type=str)  #, e.g. './data/cfp_od_crop_OD_f2.0'
-        parser.add_argument('--cls_label_file', default='./data/dev_labels.csv')
-        parser.add_argument("--equalize", choices=["no", "yes", "IgnoreBlack"], default="no")
-        parser.add_argument("--batch_size", default=16, type=int)
-        parser.add_argument("--od_crop_factor", default=1.5, type=float)
-        parser.add_argument("--aug_rot_degrees", default=0, type=float)
-        parser.add_argument("--aug_translate", default=0.0, type=float)
-        parser.add_argument("--aug_scale", default=0.0, type=float)
-        parser.add_argument("--split_num_val_folds", default=5, type=int)
-        parser.add_argument("--split_val_fold_idx", default=4, type=int)
-        parser.add_argument("--split_test_prop", default=0.0, type=float)
+        parser.add_argument('--data_dir', type=str, #, e.g. './data/cfp_od_crop_OD_f2.0'
+                            help='location of the images used for training, validation and test of the classifier')
+        parser.add_argument('--cls_label_file', default='./data/dev_labels.csv',
+                            help='the target labels used for training')
+        parser.add_argument("--aug_hist_equalize", choices=["no", "yes", "IgnoreBlack"], default="no",
+                            help='data augmentation: histogram equalization')
+        parser.add_argument("--batch_size", default=16, type=int,
+                            help='batch size')
+        parser.add_argument("--od_crop_factor", default=1.5, type=float,
+                            help='data processing step: crop size as a proportion of the optic disk')
+        parser.add_argument("--aug_rot_degrees", default=0, type=float,
+                            help='data augmentation: range of rotation angles')
+        parser.add_argument("--aug_translate", default=0.0, type=float,
+                            help='data augmentation: range of horizontal and vertical translation')
+        parser.add_argument("--aug_scale", default=0.0, type=float,
+                            help='data augmentation: change the crop size so that image appeares scaled')
+        parser.add_argument("--split_num_val_folds", default=5, type=int,
+                            # help='validation config: which validation fold to use out of split_val_fold_idx possible ('
+                            #      'e.g. if split_val_fold_idx is 5 then a split_num_val_folds of 0 means that the first '
+                            #      '20% of the dev-set images will be used as a validation set'
+                            )
+        parser.add_argument("--split_val_fold_idx", default=4, type=int,
+                            help='validation config: 100/split_val_fold_idx is the percentage of non-test data to use for validation')
+        parser.add_argument("--split_test_prop", default=0.0, type=float,
+                            help='proportion of data to use as a test set')
         parser.add_argument("--DATA_MAX_OD_DIAMETER_PROP",
                             default=2.0,
                             help="needs to match data generated with lossless_od_crops_using_yolo_predictions.ipynb")
@@ -251,17 +266,28 @@ class LitClassifier(pl.LightningModule):
             title="LitClassifier",
             description="Classifier with multiple possible backbones"
         )
-        parser.add_argument('--lr', type=float, default=5e-5, help='Learning rate.')
-        parser.add_argument('--optimizer', choices=['adamw', 'sgd'], default='adamw')
-        parser.add_argument('--weight_decay_factor', type=float, default=0)
-        parser.add_argument('--sgd_nesterov', type=bool, default=False)
-        parser.add_argument('--sgd_momentum', type=float, default=0.9)
-        parser.add_argument('--adamw_amsgrad', type=bool, default=False)
-        parser.add_argument('--dropout', type=float, default=0.0)
-        parser.add_argument('--label_smoothing', type=float, default=0.0)
-        parser.add_argument('--class_balancing', choices=['focal_loss', 'pos_weight', 'none'], default='none')
-        parser.add_argument('--focal_loss_alpha', type=float, default=0.5)
-        parser.add_argument('--focal_loss_gamma', type=float, default=2)
+        parser.add_argument('--lr', type=float, default=5e-5,
+                            help='learning rate')
+        parser.add_argument('--optimizer', choices=['adamw', 'sgd'], default='adamw',
+                            help='optimizer')
+        parser.add_argument('--weight_decay_factor', type=float, default=0,
+                            help='optimizer parameter')
+        parser.add_argument('--sgd_nesterov', type=bool, default=False,
+                            help='SGD optimizer parameter')
+        parser.add_argument('--sgd_momentum', type=float, default=0.9,
+                            help='SGD optimizer parameter')
+        parser.add_argument('--adamw_amsgrad', type=bool, default=False,
+                            help='AdamW optimmizer parameter')
+        parser.add_argument('--dropout', type=float, default=0.0,
+                            help='dropout regularization on the last linear layer of the model')
+        parser.add_argument('--label_smoothing', type=float, default=0.0,
+                            help='apply label smoothing during training. 0.1 means that target 0 become 0.05 and target 1 becomes 0.95.')
+        parser.add_argument('--class_balancing', choices=['focal_loss', 'pos_weight', 'none'], default='none',
+                            help='what method to use for addressing class imbalance')
+        parser.add_argument('--focal_loss_alpha', type=float, default=0.5,
+                            help='applicable only if class_balancing is focal_loss')
+        parser.add_argument('--focal_loss_gamma', type=float, default=2,
+                            help='applicable only if class_balancing is focal_loss')
         parser.add_argument('--backbone',
                             choices=[
                                 'google/vit-base-patch32-384',
@@ -272,7 +298,8 @@ class LitClassifier(pl.LightningModule):
                                 'tv-384vit_b_16.IMAGENET1K_SWAG_E2E_V1',
                                 'tv-224-swin_b.IMAGENET1K_V1',
                                 'tv-224-resnext50_32x4d.IMAGENET1K_V2'
-                            ], default='hf-vit-384')
+                            ], default='tv-224-swin_b.IMAGENET1K_V1',
+                            help='choice of model and pretrained weigths for transfer learning')
         return parent_parser
 
     def __init__(self, **kwargs):
@@ -524,16 +551,21 @@ def cli_main():
     ts_script = time.time()
 
     # https://pytorch-lightning.readthedocs.io/en/latest/common/hyperparameters.html
-    parser = ArgumentParser()
+    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     # program level args
-    parser.add_argument('--seed', default=123, type=int)
-    parser.add_argument('--es_patience', default=3, type=int)
-    parser.add_argument('--es_var', choices=['val_f1', 'val_loss', 'val_partial_auroc', 'val_auroc'], default='val_partial_auroc')
-    parser.add_argument('--es_mode', choices=['min', 'max'], default='max')
-    parser.add_argument('--use_lr_scheduler', action='store_true')
-    parser.add_argument('--lr_training_epochs', default=20, type=int)
-    parser.add_argument('--lr_warmup_epochs', default=1, type=int)
-    parser.add_argument('--predict_checkpoint', default=None, type=str)
+    parser.add_argument('--seed', default=123, type=int, help='random seed')
+    parser.add_argument('--es_patience', default=3, type=int,
+                        help='early stopping: how many (half) epochs to check without an improvement in the es metric')
+    parser.add_argument('--es_var', choices=['val_f1', 'val_loss', 'val_partial_auroc', 'val_auroc'], default='val_partial_auroc',
+                        help='early stopping: which metric to use for early stopping (stop training when the metric doesn\'t improve on the validations set')
+    parser.add_argument('--es_mode', choices=['min', 'max'], default='max',
+                        help='early stopping: ')
+    parser.add_argument('--use_lr_scheduler', action='store_true',
+                        help='flag indicating whether a learning rate scheduler (cosine schedule with linear warmup) should be used')
+    parser.add_argument('--lr_training_epochs', default=20, type=int,
+                        help='lr has decayed to 0 after these many epochs (only applicable in conjunction with use_lr_scheduler)')
+    parser.add_argument('--lr_warmup_epochs', default=1, type=int,
+                        help='lr increases from 0 to the configured value in this many epochs')
     parser = MyDataModule.add_argparse_args(parser)
     parser = LitClassifier.add_model_specific_args(parser)
     args = parser.parse_args()
@@ -559,52 +591,48 @@ def cli_main():
 
     set_seed(args.seed)
 
-    if args.predict_checkpoint:
-        model = LitClassifier.load_from_checkpoint(args.predict_checkpoint)
-        model.eval()
-    else:
-        tb_logger = pl.loggers.TensorBoardLogger(
-            save_dir="experiment_logs", name=args.experiment_name, default_hp_metric=False
-        )
+    tb_logger = pl.loggers.TensorBoardLogger(
+        save_dir="experiment_logs", name=args.experiment_name, default_hp_metric=False
+    )
 
-        early_stop_callback = pl.callbacks.EarlyStopping(
-            monitor=args.es_var,
-            patience=args.es_patience,
-            strict=False,
-            verbose=True,
-            mode=args.es_mode,
-        )
+    early_stop_callback = pl.callbacks.EarlyStopping(
+        monitor=args.es_var,
+        patience=args.es_patience,
+        strict=False,
+        verbose=True,
+        mode=args.es_mode,
+    )
 
-        checkpointing_callback = pl.callbacks.ModelCheckpoint(
-            monitor=args.es_var, save_top_k=1, mode=args.es_mode
-        )
+    checkpointing_callback = pl.callbacks.ModelCheckpoint(
+        monitor=args.es_var, save_top_k=1, mode=args.es_mode
+    )
 
-        model = LitClassifier(**args.__dict__)
-        data = MyDataModule(args, model.backbone_transform, model.backbone_resize)
+    model = LitClassifier(**args.__dict__)
+    data = MyDataModule(args, model.backbone_transform, model.backbone_resize)
 
-        set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected
+    set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected
 
-        trainer = pl.Trainer(
-            accelerator="auto",
-            logger=tb_logger,
-            callbacks=[early_stop_callback, checkpointing_callback],
-            max_epochs=1000,
-            auto_lr_find=False,
-            deterministic=True,
-            num_sanity_val_steps=0,
-            val_check_interval=0.5  # the model converges quickly, so the validation should be done more frequently for better model selection
-        )
-        # trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+    trainer = pl.Trainer(
+        accelerator="auto",
+        logger=tb_logger,
+        callbacks=[early_stop_callback, checkpointing_callback],
+        max_epochs=1000,
+        auto_lr_find=False,
+        deterministic=True,
+        num_sanity_val_steps=0,
+        val_check_interval=0.5  # the model converges quickly, so the validation should be done more frequently for better model selection
+    )
+    # trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
-        trainer.fit(model, data)
+    trainer.fit(model, data)
 
-        set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected before testing
+    set_seed(args.seed)  # yes set the seed again to ensure the random state is unaffected before testing
 
-        # load the best model for testing
-        model.load_from_checkpoint(checkpointing_callback.best_model_path)
-        model.eval()
+    # load the best model for testing
+    model.load_from_checkpoint(checkpointing_callback.best_model_path)
+    model.eval()
 
-        trainer.test(model=model, datamodule=data)
+    trainer.test(model=model, datamodule=data)
 
 
 if __name__ == "__main__":

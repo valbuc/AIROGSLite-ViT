@@ -116,9 +116,9 @@ class Normalize(object):
 class EqualizeTransform(object):
     def __init__(self, args):
         self.equalize = None
-        if args.equalize.lower() == 'ignoreblack':
+        if args.aug_hist_equalize.lower() == 'ignoreblack':
             self.equalize = EqualizeIgnoreBlack(9, 69)
-        elif args.equalize.lower() == 'yes':
+        elif args.aug_hist_equalize.lower() == 'yes':
             self.equalize = Equalize()
 
     def __call__(self, sample):
