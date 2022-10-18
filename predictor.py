@@ -76,7 +76,7 @@ class ClassifierDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
         img = self._get_data(idx)
-        label = np.nan
+        label = None
         if self.labels is not None:
             label = self.labels[idx]
         return img, label, self.filenames[idx]
@@ -106,8 +106,6 @@ class MyDataModule(pl.LightningDataModule):
         )
         parser.add_argument('--data_dir', type=str, #, e.g. './data/cfp_od_crop_OD_f2.0'
                             help='location of the images used for training, validation and test of the classifier')
-        parser.add_argument('--predict_data_dir', type=str, #, e.g. './data/cfp_od_crop_OD_f2.0'
-                            help='location of the images used for prediction (competition test images)')
         parser.add_argument('--cls_label_file', default='./data/dev_labels.csv',
                             help='the target labels used for training')
         parser.add_argument("--aug_hist_equalize", choices=["no", "yes", "IgnoreBlack"], default="no",
@@ -219,11 +217,6 @@ class MyDataModule(pl.LightningDataModule):
             self.test_ds = ClassifierDataset(args.data_dir, cache_all=False, transform=self.test_transforms,
                                              filenames=df_labels[test_mask].filename.to_numpy(),
                                              labels=df_labels[test_mask].label_num.to_numpy())
-
-        if args.predict_data_dir:
-            datadir_filenames = sorted([fn for fn in os.listdir(args.predict_data_dir) if fn.endswith('.png')])
-            self.predict_ds = ClassifierDataset(args.predict_data_dir, cache_all=False, transform=self.test_transforms,
-                                                filenames=datadir_filenames, labels=None)
         self.batch_size = args.batch_size
         self.args = args
 
@@ -235,9 +228,6 @@ class MyDataModule(pl.LightningDataModule):
             self.val_ds, shuffle=False, batch_size=self.batch_size,
             num_workers=1, persistent_workers=True, pin_memory=True)
         self.test_data_loader = DataLoader(self.test_ds, shuffle=False, batch_size=self.batch_size, num_workers=8)
-
-    def predict_dataloader(self):
-        return DataLoader(self.predict_ds, shuffle=False, batch_size=self.batch_size, num_workers=8)
 
     def train_dataloader(self):
         return self.train_data_loader
@@ -492,12 +482,12 @@ class LitClassifier(pl.LightningModule):
             return _labels * (1 - label_smoothing) + 0.5 * label_smoothing
         loss = self.criterion(logits, _smooth_labels(labels))
 
-        self.log(f'{metric_category}_loss', loss, on_step=True, on_epoch=False, batch_size=len(labels))
-        self.log(f'{metric_category}_epoch_loss', loss, on_step=False, on_epoch=True, batch_size=len(labels))
+        self.log(f'{metric_category}_loss', loss, on_step=True, on_epoch=False)
+        self.log(f'{metric_category}_epoch_loss', loss, on_step=False, on_epoch=True)
         metrics = self.metrics[metric_category]
         for name, metric in metrics.items():
             metric_value = metric(y_prob, labels)
-            self.log(f"{metric_category}_{name}", metric_value, on_step=False, on_epoch=True, batch_size=len(labels))
+            self.log(f"{metric_category}_{name}", metric_value, on_step=False, on_epoch=True)
 
         return loss, y_prob, labels
 
@@ -525,9 +515,6 @@ class LitClassifier(pl.LightningModule):
         test_res_file = f'{self.hparams.tensorboard_log_dir}/predictions_{self.hparams.experiment_name}.csv'
         df_test_res.to_csv(test_res_file)
         print(f'Written test predictions to {test_res_file}')
-
-    def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        return torch.sigmoid(self(batch[0]).squeeze(dim=1)).cpu().numpy(), batch[2]  # pred, filename
 
     def on_train_start(self):
         # Ensuring that the test metrics are logged also in the hyperparameters tab
@@ -653,9 +640,12 @@ def cli_main():
         logger=tb_logger,
         callbacks=[early_stop_callback, checkpointing_callback],
         max_epochs=1000,
+        auto_lr_find=False,
+        deterministic=True,
         num_sanity_val_steps=0,
         val_check_interval=0.5  # the model converges quickly, so the validation should be done more frequently for better model selection
     )
+    # trainer.tune(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
     trainer.fit(model, data)
 
@@ -666,16 +656,6 @@ def cli_main():
     model.eval()
 
     trainer.test(model=model, datamodule=data)
-
-    if args.predict_data_dir:
-        dfs = []
-        predictions = trainer.predict(model, data.predict_dataloader())
-        for preds, filenames in predictions:
-            df = pd.DataFrame(data={'filename': filenames, 'predictions': preds})
-            dfs.append(df)
-        df_test_res = pd.concat(dfs).sort_values(by='filename', ascending=True)
-        test_res_file = f'{args.tensorboard_log_dir}/submission_predictions_{args.experiment_name}.csv'
-        df_test_res.to_csv(test_res_file)
 
 
 if __name__ == "__main__":
