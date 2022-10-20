@@ -139,3 +139,6 @@ dmypy.json
 annotations/avg_optic_disk*
 csv_all_annotators.csv
 
+# don't store model checkpoint files
+*.ckpt
+

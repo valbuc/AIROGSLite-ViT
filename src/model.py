@@ -183,7 +183,7 @@ class LitClassifier(pl.LightningModule):
                 mean=(0.485, 0.456, 0.406),
                 std=(0.229, 0.224, 0.225),
             )
-            self.backbone_resize = transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC)
+            self.backbone_resize = transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BICUBIC)
         elif self.hparams['backbone'] == 'tv-224-swin_b.IMAGENET1K_V1':
             self.backbone = models.swin_b(weights=models.Swin_B_Weights.IMAGENET1K_V1)
             self.backbone.head = nn.Sequential(
