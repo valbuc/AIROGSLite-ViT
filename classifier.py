@@ -164,7 +164,8 @@ class MyDataModule(pl.LightningDataModule):
                 transforms.RandomApply([
                     transforms.RandomAffine(degrees=args.aug_rot_degrees,
                                             translate=(aug_translate/2, aug_translate/2),
-                                            scale=None)],  # random scaling is done through the cropping
+                                            scale=None),  # random scaling is done through the cropping
+                    ],
                     p=0.66),
                 CenterCrop(crop_factor, args.aug_scale/2),
                 backbone_resize,
